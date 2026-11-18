@@ -95,12 +95,13 @@ function AppContent() {
 function App() {
   return (
     <AuthProvider>
-      <ToastProvider>
-
-        <ConfirmProvider>
+      {/* ConfirmProvider va por fuera de ToastProvider para que `toast.confirm`
+          pueda delegar en el modal de confirmación global. */}
+      <ConfirmProvider>
+        <ToastProvider>
           <AppContent />
-        </ConfirmProvider>
-      </ToastProvider>
+        </ToastProvider>
+      </ConfirmProvider>
     </AuthProvider>
   );
 }

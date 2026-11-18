@@ -293,4 +293,14 @@ export function usePrompt() {
   return confirmApi.promptModal || confirmApi.prompt;
 }
 
+/**
+ * Variante tolerante de useConfirm: devuelve null si no hay ConfirmProvider.
+ * Permite que ToastProvider (que puede montarse sin ConfirmProvider, p. ej. en tests)
+ * ofrezca `toast.confirm` sin romper.
+ */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useOptionalConfirm() {
+  return useContext(ConfirmContext);
+}
+
 export default ConfirmProvider;

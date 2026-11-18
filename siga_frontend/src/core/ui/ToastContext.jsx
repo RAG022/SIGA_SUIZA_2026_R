@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from 'lucide-react';
+import { useOptionalConfirm } from './ConfirmModal';
 
 const ToastContext = createContext(null);
 
@@ -101,6 +102,7 @@ function ToastContainer({ toasts, onClose }) {
  */
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
+  const confirmApi = useOptionalConfirm();
 
   const removeToast = useCallback((id) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
@@ -120,6 +122,13 @@ export function ToastProvider({ children }) {
   const error = useCallback((msg, dur = 6000) => addToast('error', msg, dur), [addToast]);
   const warning = useCallback((msg, dur = 5000) => addToast('warning', msg, dur), [addToast]);
   const info = useCallback((msg, dur = 4000) => addToast('info', msg, dur), [addToast]);
+
+  // Confirmación modal accesible tanto como `toast.confirm({...})` como `confirm({...})`.
+  // Si no hay ConfirmProvider montado (tests aislados del ToastProvider) resuelve true.
+  const confirm = useCallback(
+    (options) => (confirmApi?.confirm ? confirmApi.confirm(options) : Promise.resolve(true)),
+    [confirmApi]
+  );
 
   // INTERCEPTOR GLOBAL: Erradicar al 100% las ventanas emergentes nativas del navegador (window.alert y window.prompt)
   useEffect(() => {
@@ -180,6 +189,7 @@ export function ToastProvider({ children }) {
       error,
       warning,
       info,
+      confirm,
       dismiss: removeToast,
       clear: clearToasts,
     },
@@ -187,6 +197,7 @@ export function ToastProvider({ children }) {
     error,
     warning,
     info,
+    confirm,
     showSuccess: success,
     showError: error,
     showWarning: warning,
