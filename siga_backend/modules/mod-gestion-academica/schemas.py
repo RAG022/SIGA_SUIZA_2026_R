@@ -1,6 +1,9 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List
 from datetime import date, datetime
+import re
+
+DNI_RE = re.compile(r"^\d{8,15}$")
 
 class EstudianteBase(BaseModel):
     codigo_estudiante: str
@@ -19,6 +22,30 @@ class EstudianteBase(BaseModel):
     fecha_limite_documentos: Optional[datetime] = None
     modalidad_admision: Optional[str] = "ORDINARIO"
     metadata_admision: Optional[dict] = {}
+
+    @field_validator("dni")
+    @classmethod
+    def validar_dni(cls, valor):
+        valor = (valor or "").strip()
+        if not DNI_RE.fullmatch(valor):
+            raise ValueError("El DNI debe tener entre 8 y 15 dígitos numéricos.")
+        return valor
+
+    @field_validator("nombres", "apellidos")
+    @classmethod
+    def validar_nombres(cls, valor):
+        valor = (valor or "").strip()
+        if not valor:
+            raise ValueError("Los nombres y apellidos son obligatorios.")
+        return valor
+
+    @field_validator("codigo_estudiante")
+    @classmethod
+    def validar_codigo(cls, valor):
+        valor = (valor or "").strip()
+        if not valor:
+            raise ValueError("El código de estudiante es obligatorio.")
+        return valor
 
 class EstudianteCreate(EstudianteBase):
     pass
@@ -42,6 +69,26 @@ class EstudianteUpdate(BaseModel):
     fecha_limite_documentos: Optional[datetime] = None
     modalidad_admision: Optional[str] = "ORDINARIO"
     metadata_admision: Optional[dict] = {}
+
+    @field_validator("dni")
+    @classmethod
+    def validar_dni(cls, valor):
+        if valor is None:
+            return valor
+        valor = valor.strip()
+        if not DNI_RE.fullmatch(valor):
+            raise ValueError("El DNI debe tener entre 8 y 15 dígitos numéricos.")
+        return valor
+
+    @field_validator("nombres", "apellidos")
+    @classmethod
+    def validar_nombres(cls, valor):
+        if valor is None:
+            return valor
+        valor = valor.strip()
+        if not valor:
+            raise ValueError("Los nombres y apellidos no pueden estar vacíos.")
+        return valor
 
 class EstudianteResponse(EstudianteBase):
     id: int
@@ -87,7 +134,7 @@ class IngestaAdmitido(BaseModel):
     dni: str
     nombres: str
     apellidos: str
-    programa_id: int
+    programa_id: Optional[int] = None
     periodo_id: Optional[int] = 1
     celular: Optional[str] = None
     email_personal: Optional[str] = None

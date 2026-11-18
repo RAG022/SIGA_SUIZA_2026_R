@@ -11,7 +11,9 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete
+from sqlalchemy import delete, text
+from typing import Optional
+import unicodedata
 
 from database import engine, Base, get_db
 from models import PostulanteAdmitido
@@ -121,6 +123,46 @@ async def root():
     return HTMLResponse(content=html_content)
 
 
+def normalizar_texto(valor: str) -> str:
+    """Normaliza nombres para compararlos sin acentos, mayúsculas ni signos."""
+    if not valor:
+        return ""
+    txt = unicodedata.normalize("NFKD", str(valor))
+    txt = "".join(c for c in txt if not unicodedata.combining(c)).upper()
+    for ch in ".,;:-_()/":
+        txt = txt.replace(ch, " ")
+    return " ".join(txt.split())
+
+
+async def cargar_programas(db: AsyncSession) -> list:
+    """Carga el catálogo de programas una sola vez (evita N+1 por registro)."""
+    try:
+        res = await db.execute(text("SELECT id, nombre FROM programas_estudio"))
+        return [(pid, normalizar_texto(nombre)) for pid, nombre in res.all() if nombre]
+    except Exception as e:  # pragma: no cover - defensivo
+        print(f"[ADMISION] No se pudo leer programas_estudio: {e}")
+        return []
+
+
+def resolver_programa_id(programas, programa_nombre: str) -> Optional[int]:
+    """
+    Resuelve el ID real del programa de estudios contra el catálogo ya cargado.
+
+    El mapeo fijo anterior (1, 2, 4, ...) apuntaba a IDs que no existen en esta
+    instalación, por lo que los ingresantes quedaban huérfanos. Si no hay
+    coincidencia por nombre y la instalación tiene un único programa, se usa ese.
+    """
+    objetivo = normalizar_texto(programa_nombre)
+    if objetivo:
+        for pid, nombre in programas:
+            if nombre == objetivo or nombre in objetivo or objetivo in nombre:
+                return pid
+
+    if len(programas) == 1:
+        return programas[0][0]
+    return None
+
+
 def sanitize_row(row):
     result = {}
     for k, v in row.items():
@@ -226,47 +268,28 @@ async def upload_excel(file: UploadFile = File(...), db: AsyncSession = Depends(
 async def get_admitidos(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(PostulanteAdmitido))
     records = result.scalars().all()
-    
-    # Formateamos para el core
+
+    # Catálogo cargado una sola vez: antes se hacía una consulta por cada
+    # postulante (781 consultas, ~5 s de respuesta).
+    programas = await cargar_programas(db)
+
     formatted = []
-    
-    # Mapping simplificado para el programa_id temporal (el core deberia mapear, pero para MVP enviamos un fallback id)
-    # Mapeo exacto alineado con los IDs del frontend (1=Arquitectura/Sistemas, 2=Enfermeria, 4=Administracion, 5=Contabilidad, 6=Mecatronica)
-    program_mapping = {
-        "DESARROLLO DE SISTEMAS DE INFORMACIÓN": 1,
-        "ENFERMERÍA TÉCNICA": 2,
-        "GESTIÓN ADMINISTRATIVA": 4,
-        "ASISTENCIA ADMINISTRATIVA": 4,
-        "CONTABILIDAD": 5,
-        "MECATRÓNICA AUTOMOTRIZ": 6,
-        "ELECTRICIDAD INDUSTRIAL": 7,
-        "ADMINISTRACIÓN DE OPERACIONES TURÍSTICAS": 8,
-        "CONSTRUCCIÓN CIVIL": 9,
-        "PRODUCCIÓN AGROPECUARIA": 10,
-        "MANEJO FORESTAL": 11
-    }
-    
     for r in records:
-        prog_name_upper = r.programa_nombre.upper()
-        # Fallback a 99 (Desconocido) en lugar de 1, para no mezclar con Sistemas
-        prog_id = 99
-        for k,v in program_mapping.items():
-            if k in prog_name_upper or prog_name_upper in k:
-                prog_id = v
-                break
-                
+        prog_id = resolver_programa_id(programas, r.programa_nombre)
+
         formatted.append({
             "dni": r.dni,
             "nombres": r.nombres,
             "apellidos": r.apellidos,
-            "programa_id": prog_id, 
+            "programa_id": prog_id,
+            "programa_nombre": r.programa_nombre,
             "celular": r.celular,
             "email_personal": r.email,
             "fecha_nacimiento": r.fecha_nacimiento,
             "modalidad": r.modalidad_admision,
             "metadata_completa": r.metadata_admision
         })
-        
+
     return {"admitidos": formatted}
 
 if __name__ == "__main__":

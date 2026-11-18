@@ -1,8 +1,9 @@
 from fastapi import APIRouter, HTTPException, Depends, status, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, text
+from sqlalchemy import select, or_, text, delete
 from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import IntegrityError
 from database import get_db, OutboxEvent
 from models import Estudiante, Matricula, MatriculaDetalle
 from schemas import EstudianteCreate, EstudianteResponse, EstudianteUpdate, MatriculaCreate, MatriculaResponse, IngestaMasivaRequest
@@ -16,6 +17,46 @@ router = APIRouter()
 FOTO_DIR = Path(__file__).resolve().parent / "uploads" / "fotos"
 ALLOWED_IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
 MAX_FOTO_SIZE = 5 * 1024 * 1024  # 5 MB
+
+
+async def _programas_validos(db: AsyncSession) -> set[int]:
+    """IDs reales del catálogo de programas de estudios."""
+    result = await db.execute(text("SELECT id FROM programas_estudio"))
+    return set(result.scalars().all())
+
+
+async def _codigos_usados(db: AsyncSession, year: int | None = None) -> set[str]:
+    """Códigos de estudiante ya emitidos en el año indicado."""
+    year = year or datetime.now().year
+    result = await db.execute(
+        select(Estudiante.codigo_estudiante).where(
+            Estudiante.codigo_estudiante.like(f"{year}-%")
+        )
+    )
+    return {str(c) for c in result.scalars().all()}
+
+
+def _primer_codigo_libre(prefix: str, usados: set[str]) -> tuple[int, str]:
+    """
+    Primer sufijo de 6 dígitos no utilizado: AAAA-000001, AAAA-000002, ...
+
+    Antes se calculaba max+1 sobre los sufijos de 6 dígitos, pero los códigos
+    heredados son AAAA-DNI y algunos DNI históricos tienen 6 dígitos, así que
+    el resultado arrancaba en valores como 2026-123740.
+    """
+    seq = 1
+    while f"{prefix}{seq:06d}" in usados:
+        seq += 1
+    return seq, f"{prefix}{seq:06d}"
+
+
+async def _siguiente_codigo_estudiante(db: AsyncSession) -> str:
+    """Siguiente código secuencial libre del año (formato AAAA-000000)."""
+    year = datetime.now().year
+    prefix = f"{year}-"
+    usados = await _codigos_usados(db, year)
+    return _primer_codigo_libre(prefix, usados)[1]
+
 
 
 def _foto_path_for(filename: str) -> Path:
@@ -116,60 +157,106 @@ async def ingesta_admitidos(request: Request, data: IngestaMasivaRequest, db: As
     Crea los expedientes de estudiantes y dispara eventos para integrarlos al ecosistema (crear usuarios, matricular, etc).
     """
     estudiantes_creados = 0
-    
+    omitidos = 0
+    errores = 0
+
+    # IDs reales de programas para no crear expedientes huérfanos
+    programas_validos = await _programas_validos(db)
+
+    # Secuencia de códigos coherente (AAAA-000000). Los códigos heredados
+    # (AAAA-DNI) no participan, pero se evitan colisiones comprobando el set.
+    year = datetime.now().year
+    prefix = f"{year}-"
+    usados = await _codigos_usados(db, year)
+    secuencia, _ = _primer_codigo_libre(prefix, usados)
+
+    # DNIs ya registrados, cargados una sola vez: antes se hacía un SELECT por
+    # cada admitido (781 consultas y ~14 s para una resincronización completa).
+    dnis_existentes = set((await db.execute(select(Estudiante.dni))).scalars().all())
+
     for admitido in data.admitidos:
-        # 1. Capa Anticorrupción: Validar si ya existe
-        existing = await db.execute(select(Estudiante).where(Estudiante.dni == admitido.dni))
-        if existing.scalar_one_or_none():
-            continue # Ya existe, saltamos
-            
-        # Generar código universitario estándar
-        year = datetime.now().year
-        codigo = f"{year}-{admitido.dni}"
-        
-        # 2. Crear Estudiante
-        db_estudiante = Estudiante(
-            codigo_estudiante=codigo,
-            dni=admitido.dni,
-            nombres=admitido.nombres,
-            apellidos=admitido.apellidos,
-            programa_id=admitido.programa_id,
-            celular=admitido.celular,
-            email_personal=admitido.email_personal,
-            modalidad_admision=admitido.modalidad,
-            metadata_admision=admitido.metadata_completa
-        )
-        db.add(db_estudiante)
-        await db.flush() # para obtener el ID
-        
-        # 3. Disparar evento para matricular en Ciclo I automáticamente
-        # y para que mod-usuarios le cree su cuenta
-        event_payload = {
-            "event_id": str(uuid.uuid4()),
-            "event_type": "gestion_academica.admision.estudiante_ingresado",
-            "source": "mod-gestion-academica",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "version": "1.0.0",
-            "data": {
-                "estudiante_id": db_estudiante.id,
-                "dni": db_estudiante.dni,
-                "nombres": db_estudiante.nombres,
-                "apellidos": db_estudiante.apellidos,
-                "programa_id": admitido.programa_id,
-                "periodo_id": admitido.periodo_id,
-                "proceso_admision_id": data.proceso_admision_id
-            },
-            "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")}
-        }
-        
-        db.add(OutboxEvent(event_type=event_payload["event_type"], payload=event_payload))
-        estudiantes_creados += 1
-        
+        dni = (admitido.dni or "").strip()
+        nombres = (admitido.nombres or "").strip()
+        apellidos = (admitido.apellidos or "").strip()
+        if not dni or not nombres or not apellidos or len(dni) > 15:
+            omitidos += 1
+            continue
+
+        if dni in dnis_existentes:
+            omitidos += 1
+            continue
+
+        programa_id = admitido.programa_id
+        if programa_id not in programas_validos:
+            programa_id = None
+
+        try:
+            # Savepoint por fila: un código/DNI duplicado ya no aborta el lote
+            # completo con un 500.
+            async with db.begin_nested():
+                while f"{prefix}{secuencia:06d}" in usados:
+                    secuencia += 1
+                codigo = f"{prefix}{secuencia:06d}"
+                usados.add(codigo)
+                secuencia += 1
+
+                db_estudiante = Estudiante(
+                    codigo_estudiante=codigo,
+                    dni=dni,
+                    nombres=nombres,
+                    apellidos=apellidos,
+                    programa_id=programa_id,
+                    celular=admitido.celular,
+                    email_personal=admitido.email_personal,
+                    modalidad_admision=admitido.modalidad or "ORDINARIO",
+                    estado_academico="postulante",
+                    metadata_admision=admitido.metadata_completa or {},
+                )
+                db.add(db_estudiante)
+                await db.flush()  # para obtener el ID
+
+                event_payload = {
+                    "event_id": str(uuid.uuid4()),
+                    "event_type": "gestion_academica.admision.estudiante_ingresado",
+                    "source": "mod-gestion-academica",
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "version": "1.0.0",
+                    "data": {
+                        "estudiante_id": db_estudiante.id,
+                        "dni": db_estudiante.dni,
+                        "nombres": db_estudiante.nombres,
+                        "apellidos": db_estudiante.apellidos,
+                        "programa_id": programa_id,
+                        "periodo_id": admitido.periodo_id,
+                        "proceso_admision_id": data.proceso_admision_id,
+                    },
+                    "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")},
+                }
+                db.add(OutboxEvent(event_type=event_payload["event_type"], payload=event_payload))
+
+            estudiantes_creados += 1
+            dnis_existentes.add(dni)
+        except IntegrityError:
+            errores += 1
+            continue
+
     await db.commit()
-    return {"message": "Ingesta procesada", "estudiantes_creados": estudiantes_creados}
+    return {
+        "message": "Ingesta procesada",
+        "estudiantes_creados": estudiantes_creados,
+        "omitidos": omitidos,
+        "errores": errores,
+    }
 
 @router.post("/estudiantes/", response_model=EstudianteResponse, status_code=status.HTTP_201_CREATED)
 async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSession = Depends(get_db)):
+    programas = await _programas_validos(db)
+    if data.programa_id is not None and data.programa_id not in programas:
+        raise HTTPException(
+            status_code=400,
+            detail="El programa de estudios seleccionado no existe en el catálogo.",
+        )
+
     existing = await db.execute(select(Estudiante).where(
         or_(Estudiante.dni == data.dni, Estudiante.codigo_estudiante == data.codigo_estudiante)
     ))
@@ -182,7 +269,14 @@ async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSe
 
     db_estudiante = Estudiante(**data.model_dump())
     db.add(db_estudiante)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="El DNI o el código de estudiante ya existe. Verifique los datos e intente nuevamente.",
+        )
     
     event_payload = {
         "event_id": str(uuid.uuid4()),
@@ -201,14 +295,15 @@ async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSe
 
 @router.get("/estudiantes/")
 async def obtener_estudiantes(programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
-    import traceback
     try:
         query = select(Estudiante).order_by(Estudiante.apellidos)
         if programa_id is not None:
             query = query.where(Estudiante.programa_id == programa_id)
         result = await db.execute(query)
         rows = result.scalars().all()
-        print(f"[DEBUG] Estudiantes encontrados: {len(rows)}")
+        # Payload de listado: se excluye metadata_admision (≈1,6 KB por fila)
+        # y direccion_domicilio, que solo usa el detalle. Con 781 estudiantes
+        # esto bajaba la respuesta de ~1,26 MB a ~150 KB.
         return [
             {
                 "id": r.id,
@@ -222,35 +317,26 @@ async def obtener_estudiantes(programa_id: Optional[int] = None, db: AsyncSessio
                 "email_personal": r.email_personal,
                 "email_institucional": r.email_institucional,
                 "celular": r.celular,
-                "direccion_domicilio": r.direccion_domicilio,
                 "fecha_nacimiento": r.fecha_nacimiento.isoformat() if r.fecha_nacimiento else None,
                 "pago_matricula": r.pago_matricula,
                 "documentos_completos": r.documentos_completos,
                 "fecha_limite_documentos": r.fecha_limite_documentos.isoformat() if r.fecha_limite_documentos else None,
                 "modalidad_admision": r.modalidad_admision,
-                "metadata_admision": r.metadata_admision or {},
             }
             for r in rows
         ]
     except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[ERROR] obtener_estudiantes: {e}\n{tb}")
-        return {"error": str(e), "type": type(e).__name__, "traceback": tb}
+        import traceback
+        print(f"[ERROR] obtener_estudiantes: {e}\n{traceback.format_exc()}")
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo obtener el listado de estudiantes. Intente nuevamente.",
+        )
 
 @router.get("/estudiantes/siguiente-codigo")
 async def obtener_siguiente_codigo(db: AsyncSession = Depends(get_db)):
     """Devuelve el siguiente código de estudiante único del año actual (formato AAAA-000000)."""
-    year = datetime.now().year
-    prefix = f"{year}-"
-    result = await db.execute(
-        select(Estudiante.codigo_estudiante).where(Estudiante.codigo_estudiante.like(f"{prefix}%"))
-    )
-    max_seq = 0
-    for codigo in result.scalars().all():
-        suffix = str(codigo)[len(prefix):]
-        if suffix.isdigit():
-            max_seq = max(max_seq, int(suffix))
-    return {"codigo_estudiante": f"{prefix}{max_seq + 1:06d}"}
+    return {"codigo_estudiante": await _siguiente_codigo_estudiante(db)}
 
 @router.put("/estudiantes/{estudiante_id}/pago_matricula", response_model=EstudianteResponse)
 async def actualizar_pago_matricula(estudiante_id: int, request: Request, pagado: bool = True, db: AsyncSession = Depends(get_db)):
@@ -643,6 +729,15 @@ async def actualizar_estudiante(estudiante_id: int, data: EstudianteUpdate, requ
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
 
     update_data = data.model_dump(exclude_unset=True)
+
+    if update_data.get("programa_id") is not None:
+        programas = await _programas_validos(db)
+        if update_data["programa_id"] not in programas:
+            raise HTTPException(
+                status_code=400,
+                detail="El programa de estudios seleccionado no existe en el catálogo.",
+            )
+
     for key, value in update_data.items():
         setattr(db_estudiante, key, value)
 
@@ -657,7 +752,14 @@ async def actualizar_estudiante(estudiante_id: int, data: EstudianteUpdate, requ
     }
 
     db.add(OutboxEvent(event_type=event_payload["event_type"], payload=event_payload))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="El DNI o el código de estudiante ya pertenece a otro expediente.",
+        )
     await db.refresh(db_estudiante)
     return db_estudiante
 
@@ -667,6 +769,29 @@ async def eliminar_estudiante(estudiante_id: int, request: Request, db: AsyncSes
     db_estudiante = result.scalar_one_or_none()
     if not db_estudiante:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+
+    foto = db_estudiante.foto_url
+
+    # Las FKs de dependencias usan NO ACTION: se eliminan explícitamente antes
+    # del expediente para no devolver un 500 de integridad referencial.
+    await db.execute(
+        text("DELETE FROM convalidaciones_detalle WHERE resolucion_id IN "
+             "(SELECT id FROM resoluciones_convalidacion WHERE estudiante_id = :eid)"),
+        {"eid": estudiante_id},
+    )
+    for tabla in (
+        "tesoreria_pagos",
+        "solicitudes_tramites",
+        "registros_practicas",
+        "resoluciones_convalidacion",
+        "historial_academico",
+        "beneficios_estudiante",
+        "matriculas",
+    ):
+        await db.execute(
+            text(f"DELETE FROM {tabla} WHERE estudiante_id = :eid"),
+            {"eid": estudiante_id},
+        )
 
     await db.delete(db_estudiante)
 
@@ -679,9 +804,20 @@ async def eliminar_estudiante(estudiante_id: int, request: Request, db: AsyncSes
         "data": {"id": estudiante_id},
         "metadata": {"request_id": request.headers.get("X-Request-ID", "unknown")}
     }
-    
+
     db.add(OutboxEvent(event_type=event_payload["event_type"], payload=event_payload))
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="El expediente tiene registros asociados que impiden su eliminación.",
+        )
+
+    if foto:
+        _delete_foto(foto)
+
     return {"message": "Estudiante eliminado"}
 
 @router.post("/matriculas/", response_model=MatriculaResponse, status_code=status.HTTP_201_CREATED)
@@ -871,6 +1007,15 @@ async def crear_tramite(data: SolicitudTramiteCreate, db: AsyncSession = Depends
     await db.commit()
     await db.refresh(db_tramite)
     return db_tramite
+
+@router.get("/tramites/estudiante/{estudiante_id}", response_model=List[SolicitudTramiteResponse])
+async def obtener_tramites_estudiante(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(SolicitudTramite)
+        .where(SolicitudTramite.estudiante_id == estudiante_id)
+        .order_by(SolicitudTramite.fecha_solicitud.desc())
+    )
+    return result.scalars().all()
 
 @router.get("/tramites/", response_model=List[SolicitudTramiteResponse])
 async def obtener_tramites(db: AsyncSession = Depends(get_db)):
