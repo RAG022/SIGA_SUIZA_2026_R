@@ -71,3 +71,8 @@ dump_railway.sql
 siga_core_inserts.sql
 dump_*.sql
 backups/
+
+# Respaldos locales con datos personales de estudiantes (no versionar)
+backup_*.sql
+*_pre_clean_*.sql
+
