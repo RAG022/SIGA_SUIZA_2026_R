@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, Fragment } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { useAuth } from '../../core/auth/useAuth';
 import { API_BASE } from '../../core/api/client';
@@ -7,6 +7,7 @@ import techBg from '../../assets/tech-bg.jpg';
 import { EditStudentModal } from './EditStudentModal';
 import { StudentDetail } from './StudentDetail';
 import { ProtectedImage } from './ProtectedImage';
+import { useProgramas, SIN_PROGRAMA } from './useProgramas';
 import { DEPARTAMENTOS, getProvincias, getDistritos } from './ubigeoPeru';
 import { GraduationCap, Search, CloudDownload, Plus, Users, Pencil, ChevronRight, ChevronLeft, ChevronDown, Check, LayoutGrid, Info, X, Mail, Phone, MapPin, CheckCircle2, FileCheck2, UserPlus, Sparkles, Camera, Trash2, AlertTriangle, Eye, CreditCard } from 'lucide-react';
 
@@ -410,51 +411,17 @@ const createEmptyStudentForm = (programaId = '') => ({
   documentos_completos: true, fecha_limite_documentos: ''
 });
 
-const PROGRAMAS = [
-  { id: 'ALL', label: 'Todos los Programas' },
-  { id: '1', label: 'Administración de Operaciones Turísticas' },
-  { id: '2', label: 'Asistencia Administrativa' },
-  { id: '3', label: 'Contabilidad' },
-  { id: '4', label: 'Construcción Civil' },
-  { id: '5', label: 'Gestión Administrativa' },
-  { id: '6', label: 'Desarrollo de Sistemas de Información' },
-  { id: '7', label: 'Electricidad Industrial' },
-  { id: '8', label: 'Enfermería Técnica' },
-  { id: '9', label: 'Manejo Forestal' },
-  { id: '10', label: 'Mecatrónica Automotriz' },
-  { id: '11', label: 'Producción Agropecuaria' },
-];
-
-const PROGRAMAS_OPTIONS = [
-  { value: '', label: 'Seleccione una carrera...' },
-  ...PROGRAMAS.filter(programa => programa.id !== 'ALL').map(programa => ({
-    value: programa.id,
-    label: programa.label,
-  })),
-];
-
 const TIPOS_SANGRE = ['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'];
 
-const getProgramaLabel = (programaId) => {
-  const programa = PROGRAMAS.find(item => item.id === String(programaId));
-  return programa ? programa.label : 'Sin carrera seleccionada';
-};
-
-const compareStudentsByCarrera = (a, b) => {
-  const carreraA = a.programa_id ? getProgramaLabel(a.programa_id) : '';
-  const carreraB = b.programa_id ? getProgramaLabel(b.programa_id) : '';
-  if (!carreraA !== !carreraB) return carreraA ? -1 : 1;
-  const porCarrera = carreraA.localeCompare(carreraB, 'es', { sensitivity: 'base' });
-  if (porCarrera !== 0) return porCarrera;
-  const porApellidos = String(a.apellidos ?? '').localeCompare(String(b.apellidos ?? ''), 'es', { sensitivity: 'base' });
-  if (porApellidos !== 0) return porApellidos;
-  return String(a.nombres ?? '').localeCompare(String(b.nombres ?? ''), 'es', { sensitivity: 'base' });
-};
-
-function ProgramaFilter({ value, onChange }) {
+function ProgramaFilter({ value, onChange, programas = [], loading = false }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
-  const selected = PROGRAMAS.find(p => String(p.id) === String(value)) || PROGRAMAS[0];
+
+  const opciones = useMemo(
+    () => [{ id: 'ALL', label: 'Todos los Programas' }, ...programas],
+    [programas]
+  );
+  const selected = opciones.find(p => String(p.id) === String(value)) || opciones[0];
   const isAll = selected.id === 'ALL';
 
   useEffect(() => {
@@ -503,7 +470,10 @@ function ProgramaFilter({ value, onChange }) {
             <span className="text-[10px] font-bold uppercase tracking-wider text-primary/80">Filtrar por programa</span>
           </div>
           <div className="max-h-72 overflow-y-auto custom-scrollbar p-1.5" role="listbox">
-            {PROGRAMAS.map(p => {
+            {loading && (
+              <div className="px-3 py-2.5 text-xs font-bold text-slate-500">Cargando catálogo de programas…</div>
+            )}
+            {opciones.map(p => {
               const active = String(p.id) === String(value);
               const all = p.id === 'ALL';
               return (
@@ -537,6 +507,7 @@ export function StudentMaster() {
   const userRoles = user?.roles ? user.roles.map(r => typeof r === 'string' ? r : r.nombre || r.name) : [];
   const primaryRole = user?.is_superuser ? 'superadmin' : (userRoles.length > 0 ? userRoles[0] : (user?.role || 'invitado'));
   const userRole = primaryRole;
+  const { programas, loading: programasLoading, getProgramaLabel } = useProgramas();
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -550,12 +521,22 @@ export function StudentMaster() {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
   const wizardBodyRef = useRef(null);
+  const abortRef = useRef(null);
+  const requestIdRef = useRef(0);
 
   const [form, setForm] = useState(() => createEmptyStudentForm());
   const [submitting, setSubmitting] = useState(false);
   const [codeLoading, setCodeLoading] = useState(false);
 
   const [showMissing, setShowMissing] = useState(false);
+
+  const programaOptions = useMemo(
+    () => [
+      { value: '', label: 'Seleccione una carrera...' },
+      ...programas.map(p => ({ value: p.id, label: p.label })),
+    ],
+    [programas]
+  );
 
   useEffect(() => {
     if (wizardBodyRef.current) {
@@ -574,24 +555,20 @@ export function StudentMaster() {
   };
   const missingBySector = (stepId) => (SECTOR_REQUIRED[stepId] || []).filter(isFieldMissing);
   const sectorHasMissing = (stepId) => missingBySector(stepId).length > 0;
-  const defaultProgramaId = () => {
-    if (currentPrograma !== 'ALL') return currentPrograma;
-    if (form.programa_id) return form.programa_id;
-    return user?.programa_id ? String(user.programa_id) : '';
-  };
+  // Secretaría de programa: el alcance sale del usuario (no de IDs fijos) y se
+  // deriva del render en lugar de mutar el estado dentro de un effect.
+  const programaRestringido =
+    userRole === 'secretaria_programa' && user?.programa_id ? String(user.programa_id) : null;
+  const programaEfectivo = programaRestringido ?? currentPrograma;
 
-  const generarCodigoLocalUnico = () => {
-    const year = new Date().getFullYear();
-    const prefix = `${year}-`;
-    let maxSeq = 0;
-    students.forEach((s) => {
-      const codigo = String(s.codigo_estudiante ?? '');
-      if (codigo.startsWith(prefix)) {
-        const suffix = codigo.slice(prefix.length);
-        if (/^\d+$/.test(suffix)) maxSeq = Math.max(maxSeq, parseInt(suffix, 10));
-      }
-    });
-    return `${prefix}${String(maxSeq + 1).padStart(6, '0')}`;
+  const defaultProgramaId = () => {
+    if (programaEfectivo !== 'ALL') return programaEfectivo;
+    if (form.programa_id) return form.programa_id;
+    if (user?.programa_id) return String(user.programa_id);
+    // Instalaciones con un único programa: se preselecciona el real en lugar
+    // de recurrir a IDs hardcodeados inexistentes.
+    if (programas.length === 1) return programas[0].id;
+    return '';
   };
 
   const generarCodigoUnico = async () => {
@@ -600,32 +577,91 @@ export function StudentMaster() {
       const res = await fetch(`${API_BASE}/api/mod-gestion-academica/estudiantes/siguiente-codigo`, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (data?.codigo_estudiante) {
-          setForm(prev => ({ ...prev, codigo_estudiante: data.codigo_estudiante }));
-          return;
-        }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data?.codigo_estudiante) {
+        setForm(prev => ({ ...prev, codigo_estudiante: data.codigo_estudiante }));
       }
-      setForm(prev => ({ ...prev, codigo_estudiante: generarCodigoLocalUnico() }));
     } catch (err) {
       console.error('No se pudo generar el código único:', err);
-      setForm(prev => ({ ...prev, codigo_estudiante: generarCodigoLocalUnico() }));
+      // Se conserva el código provisional del formulario; el backend validará
+      // la unicidad al guardar y devolverá un mensaje claro.
+      toast.warning('No se pudo obtener el código automático. Se usará un código provisional.');
     } finally {
       setCodeLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (userRole !== 'invitado') {
-      if (userRole === 'secretaria_programa' && currentPrograma === 'ALL') {
-        const fallbackId = user?.email === 'secretaria_prog@siga.edu' ? '2' : '1';
-        setCurrentPrograma(user?.programa_id ? String(user.programa_id) : fallbackId);
-      } else {
-        handleSearch(searchTerm);
+  const cargarEstudiantes = useCallback(async () => {
+    if (abortRef.current) abortRef.current.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const reqId = ++requestIdRef.current;
+
+    setLoading(true);
+    setLoadError(null);
+
+    try {
+      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/`;
+      if (programaEfectivo && programaEfectivo !== 'ALL') {
+        url += `?programa_id=${encodeURIComponent(programaEfectivo)}`;
       }
+
+      const res = await fetch(url, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` },
+        signal: controller.signal,
+      });
+
+      if (reqId !== requestIdRef.current) return;
+
+      if (res.status === 401) {
+        throw new Error('Tu sesión expiró. Vuelve a iniciar sesión.');
+      }
+
+      if (!res.ok) {
+        let detalle = `El servicio de estudiantes respondió ${res.status}.`;
+        try {
+          const cuerpo = await res.json();
+          detalle = cuerpo.detail || cuerpo.message || detalle;
+        } catch { /* cuerpo no-JSON */ }
+        throw new Error(detalle);
+      }
+
+      if (res.headers.get('X-Fallback') === 'true') {
+        throw new Error(
+          res.headers.get('X-Fallback-Message')
+          || 'El servicio de estudiantes respondió con datos degradados.'
+        );
+      }
+
+      const data = await res.json();
+      if (!Array.isArray(data)) {
+        throw new Error(data?.error || 'El servicio de estudiantes devolvió una respuesta inesperada.');
+      }
+
+      if (reqId !== requestIdRef.current) return;
+      setStudents(data);
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      if (reqId !== requestIdRef.current) return;
+      console.error(e);
+      setStudents([]);
+      setLoadError(e.message || 'No se pudo conectar con el servidor.');
+    } finally {
+      if (reqId === requestIdRef.current) setLoading(false);
     }
-  }, [currentPrograma, userRole]);
+  }, [programaEfectivo]);
+
+  useEffect(() => {
+    if (userRole === 'invitado') return;
+    // Carga inicial intencional: el spinner debe mostrarse de inmediato.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    cargarEstudiantes();
+  }, [cargarEstudiantes, userRole]);
+
+  useEffect(() => () => {
+    if (abortRef.current) abortRef.current.abort();
+  }, []);
 
   useEffect(() => {
     if (!showModal) return;
@@ -639,73 +675,42 @@ export function StudentMaster() {
     };
   }, [showModal]);
 
-  const handleSearch = async (val = '') => {
+  // La búsqueda es local: la lista completa ya está en memoria. Antes se
+  // descargaba 1,26 MB por cada tecla.
+  const handleSearch = (val = '') => {
     setSearchTerm(val);
     setCurrentPage(1);
-    setLoading(true);
-    setLoadError(null);
-    try {
-      let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/`;
-
-      if (currentPrograma && currentPrograma !== 'ALL') {
-        url += `?programa_id=${currentPrograma}`;
-      }
-
-      const res = await fetch(url, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
-      });
-
-      if (!res.ok) {
-        let detalle = `El servicio de estudiantes respondio ${res.status}.`;
-        try {
-          const cuerpo = await res.json();
-          detalle = cuerpo.detail || cuerpo.message || detalle;
-        } catch { /* cuerpo no-JSON */ }
-        console.error('API Error:', detalle);
-        setStudents([]);
-        setLoadError(detalle);
-        setLoading(false);
-        return;
-      }
-
-      if (res.headers.get('X-Fallback') === 'true') {
-        const detalle = res.headers.get('X-Fallback-Message')
-          || 'El servicio de estudiantes respondio con datos degradados.';
-        console.error('Respuesta degradada:', detalle);
-        setStudents([]);
-        setLoadError(detalle);
-        setLoading(false);
-        return;
-      }
-
-      const data = await res.json();
-      const dataArray = Array.isArray(data) ? data : [];
-      const sorted = [...dataArray].sort(compareStudentsByCarrera);
-
-      const term = String(val || '').trim();
-      if (term.length >= 3) {
-        const lowerTerm = term.toLowerCase();
-        const filtered = sorted.filter(s => {
-          const dni = String(s.dni ?? '');
-          const nombres = String(s.nombres ?? '').toLowerCase();
-          const apellidos = String(s.apellidos ?? '').toLowerCase();
-          const codigo = String(s.codigo_estudiante ?? '');
-          return dni.includes(term)
-            || nombres.includes(lowerTerm)
-            || apellidos.includes(lowerTerm)
-            || codigo.includes(term);
-        });
-        setStudents(filtered);
-      } else {
-        setStudents(sorted);
-      }
-    } catch (e) {
-      console.error(e);
-      setStudents([]);
-      setLoadError('No se pudo conectar con el servidor. Verifique que el backend este levantado.');
-    }
-    setLoading(false);
   };
+
+  const studentsFiltrados = useMemo(() => {
+    const term = searchTerm.trim().toLowerCase();
+    const carreraDe = (s) => (s.programa_id ? getProgramaLabel(s.programa_id) : '');
+
+    const lista = [...students].sort((a, b) => {
+      const carreraA = carreraDe(a);
+      const carreraB = carreraDe(b);
+      if (!carreraA !== !carreraB) return carreraA ? -1 : 1;
+      const porCarrera = carreraA.localeCompare(carreraB, 'es', { sensitivity: 'base' });
+      if (porCarrera !== 0) return porCarrera;
+      const porApellidos = String(a.apellidos ?? '').localeCompare(String(b.apellidos ?? ''), 'es', { sensitivity: 'base' });
+      if (porApellidos !== 0) return porApellidos;
+      return String(a.nombres ?? '').localeCompare(String(b.nombres ?? ''), 'es', { sensitivity: 'base' });
+    });
+
+    if (!term) return lista;
+
+    return lista.filter((s) => {
+      const dni = String(s.dni ?? '').toLowerCase();
+      const nombres = String(s.nombres ?? '').toLowerCase();
+      const apellidos = String(s.apellidos ?? '').toLowerCase();
+      const codigo = String(s.codigo_estudiante ?? '').toLowerCase();
+      return dni.includes(term)
+        || nombres.includes(term)
+        || apellidos.includes(term)
+        || codigo.includes(term)
+        || `${apellidos} ${nombres}`.includes(term);
+    });
+  }, [students, searchTerm, getProgramaLabel]);
 
   const handleFotoChange = (e) => {
     const file = e.target.files?.[0];
@@ -725,7 +730,7 @@ export function StudentMaster() {
         canvas.height = Math.round(img.height * scale);
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        setForm({ ...form, foto_url: canvas.toDataURL('image/jpeg', 0.82) });
+        setForm(prev => ({ ...prev, foto_url: canvas.toDataURL('image/jpeg', 0.82) }));
       };
       img.onerror = () => toast.error('No se pudo leer la imagen seleccionada.');
       img.src = reader.result;
@@ -746,29 +751,59 @@ export function StudentMaster() {
     setForm(prev => ({ ...prev, distrito }));
   };
 
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+  // Validaciones de formato que el navegador no aplica: el modal no es un
+  // <form> nativo (los botones son type="button"), así que type="email" y
+  // required no se ejecutaban nunca.
+  const validarFormatoSector = (stepId) => {
+    if (stepId === 1) {
+      if (!/^\d{8}$/.test(String(form.dni || '').trim())) {
+        return 'El DNI debe tener exactamente 8 dígitos numéricos.';
+      }
+    }
+    if (stepId === 2) {
+      if (!EMAIL_RE.test(String(form.email_personal || '').trim())) {
+        return 'El correo personal no tiene un formato válido (ejemplo: nombre@dominio.com).';
+      }
+      if (!EMAIL_RE.test(String(form.email_institucional || '').trim())) {
+        return 'El correo institucional no tiene un formato válido.';
+      }
+    }
+    return null;
+  };
+
   const handleCreate = async (e) => {
     e.preventDefault();
     if (submitting) return;
 
-    const firstInvalid = WIZARD_STEPS.find(step => sectorHasMissing(step.id));
-    if (firstInvalid) {
+    const firstMissing = WIZARD_STEPS.find(step => sectorHasMissing(step.id));
+    if (firstMissing) {
       setShowMissing(true);
-      setStepDir(firstInvalid.id < wizardStep ? 'back' : 'forward');
-      setWizardStep(firstInvalid.id);
+      setStepDir(firstMissing.id < wizardStep ? 'back' : 'forward');
+      setWizardStep(firstMissing.id);
+      return;
+    }
+
+    const invalidStep = WIZARD_STEPS.find(step => validarFormatoSector(step.id));
+    if (invalidStep) {
+      toast.error(validarFormatoSector(invalidStep.id));
+      setStepDir(invalidStep.id < wizardStep ? 'back' : 'forward');
+      setWizardStep(invalidStep.id);
       return;
     }
 
     const token = localStorage.getItem('token');
     if (!token) {
-      alert('Tu sesión expiró. Vuelve a iniciar sesión para registrar al estudiante.');
-      window.location.reload();
+      toast.error('Tu sesión expiró. Vuelve a iniciar sesión para registrar al estudiante.');
+      setTimeout(() => window.location.reload(), 1800);
       return;
     }
 
     setSubmitting(true);
     try {
       const programaId = form.programa_id
-        || (currentPrograma !== 'ALL' ? currentPrograma : (user?.programa_id ? String(user.programa_id) : ''));
+        || (programaEfectivo !== 'ALL' ? programaEfectivo : (user?.programa_id ? String(user.programa_id) : ''));
 
       const metadata_admision = {
         departamento: form.departamento || null,
@@ -836,12 +871,11 @@ export function StudentMaster() {
         metadata_admision,
       };
 
-      // Garantizar asignación obligatoria de programa_id
+      // Programa real elegido (sin IDs de relleno inventados).
       const assignedProg = form.programa_id
-        || (currentPrograma && currentPrograma !== 'ALL' ? currentPrograma : null)
-        || (user?.programa_id ? String(user.programa_id) : null)
-        || (user?.email === 'secretaria_prog@siga.edu' ? '2' : '1');
-      payload.programa_id = parseInt(assignedProg, 10);
+        || (programaEfectivo && programaEfectivo !== 'ALL' ? programaEfectivo : null)
+        || (user?.programa_id ? String(user.programa_id) : null);
+      payload.programa_id = assignedProg ? Number(assignedProg) : null;
 
       const res = await fetch(`${API_BASE}/api/mod-gestion-academica/estudiantes/`, {
         method: 'POST',
@@ -856,7 +890,9 @@ export function StudentMaster() {
         setForm(createEmptyStudentForm(form.programa_id));
         setWizardStep(1);
         setShowMissing(false);
-        handleSearch('');
+        setSearchTerm('');
+        toast.success('Estudiante registrado correctamente.');
+        await cargarEstudiantes();
         return;
       }
 
@@ -865,8 +901,8 @@ export function StudentMaster() {
 
       if (res.status === 401) {
         localStorage.removeItem('token');
-        alert('Tu sesión expiró. Vuelve a iniciar sesión para registrar al estudiante.');
-        window.location.reload();
+        toast.error('Tu sesión expiró. Vuelve a iniciar sesión para registrar al estudiante.');
+        setTimeout(() => window.location.reload(), 1800);
         return;
       }
 
@@ -885,10 +921,10 @@ export function StudentMaster() {
       } catch {
         if (errorText) mensaje = errorText;
       }
-      alert(`No se pudo registrar al estudiante.\n\n${mensaje}`);
+      toast.error(`No se pudo registrar al estudiante. ${mensaje}`);
     } catch (e) {
       console.error(e);
-      alert("Error de conexión al registrar el estudiante.");
+      toast.error('Error de conexión al registrar el estudiante.');
     } finally {
       setSubmitting(false);
     }
@@ -909,17 +945,22 @@ export function StudentMaster() {
     if (!ok) return;
     setLoading(true);
     try {
+      const token = localStorage.getItem('token');
       // via gateway, do not puncture the module directly
       const resAdmision = await fetch(`${API_BASE}/api/mod-admision/admitidos`, {
-        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        headers: { 'Authorization': `Bearer ${token}` }
       });
 
-      if (!resAdmision.ok) throw new Error("No se pudo conectar con Admisión Piloto");
-      let admisionData = await resAdmision.json();
+      if (!resAdmision.ok) {
+        const detalle = await resAdmision.text();
+        throw new Error(`No se pudo conectar con Admisión (HTTP ${resAdmision.status}). ${detalle}`);
+      }
 
-      if (admisionData.admitidos.length === 0) {
-        toast.info("No se encontraron ingresantes para el programa seleccionado.");
-        setLoading(false);
+      const admisionData = await resAdmision.json();
+      const admitidos = Array.isArray(admisionData?.admitidos) ? admisionData.admitidos : [];
+
+      if (admitidos.length === 0) {
+        toast.warning("Admisión no tiene ingresantes publicados. Sube primero el Excel de resultados en el panel de Admisión.");
         return;
       }
 
@@ -927,29 +968,51 @@ export function StudentMaster() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify(admisionData)
+        body: JSON.stringify({ admitidos })
       });
 
       if (resIngesta.ok) {
         const result = await resIngesta.json();
-        toast.success(`Sincronización exitosa. ${result.estudiantes_creados} nuevos estudiantes ingresados al Core.`);
-        handleSearch('');
+        const omitidos = Number(result.omitidos || 0);
+        const errores = Number(result.errores || 0);
+        const detalle = [
+          omitidos ? `${omitidos} duplicados omitidos` : null,
+          errores ? `${errores} registros con error` : null,
+        ].filter(Boolean).join(', ');
+        toast.success(
+          `Sincronización exitosa. ${result.estudiantes_creados} nuevos estudiantes ingresados al Core.`
+          + (detalle ? ` (${detalle})` : '')
+        );
+        setSearchTerm('');
+        await cargarEstudiantes();
       } else {
-        const err = await resIngesta.text();
-        toast.error(`Error en la ingesta: ${err}`);
+        let detalle = '';
+        try {
+          const cuerpo = await resIngesta.json();
+          detalle = cuerpo.detail || cuerpo.message || '';
+        } catch {
+          detalle = await resIngesta.text();
+        }
+        toast.error(`Error en la ingesta: ${detalle || `HTTP ${resIngesta.status}`}`);
       }
     } catch (e) {
       console.error(e);
-      toast.error(e.message);
+      toast.error(e.message || 'Error al sincronizar con Admisión.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const handleNext = () => {
     if (sectorHasMissing(wizardStep)) {
       setShowMissing(true);
+      return;
+    }
+    const formatoInvalido = validarFormatoSector(wizardStep);
+    if (formatoInvalido) {
+      toast.error(formatoInvalido);
       return;
     }
     setShowMissing(false);
@@ -1020,7 +1083,7 @@ export function StudentMaster() {
                   icon={GraduationCap}
                   required
                   showMissing={showMissing}
-                  options={PROGRAMAS_OPTIONS}
+                  options={programaOptions}
                   value={form.programa_id}
                   onChange={(programaId) => setForm({ ...form, programa_id: programaId })}
                   placeholder="Buscar carrera..."
@@ -1245,12 +1308,12 @@ export function StudentMaster() {
     }
   };
 
-  const totalStudents = students.length;
+  const totalStudents = studentsFiltrados.length;
   const totalPages = Math.ceil(totalStudents / pageSize) || 1;
   const safeCurrentPage = Math.min(Math.max(currentPage, 1), totalPages);
   const startIndex = totalStudents === 0 ? 0 : (safeCurrentPage - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, totalStudents);
-  const paginatedStudents = students.slice(startIndex, endIndex);
+  const paginatedStudents = studentsFiltrados.slice(startIndex, endIndex);
 
   return (
     <div className="animate-fade-in lg:flex lg:flex-col lg:flex-1 lg:min-h-0 lg:overflow-y-auto">
@@ -1312,7 +1375,12 @@ export function StudentMaster() {
 
       <div className="glass-card p-3 mb-6 flex flex-col md:flex-row md:items-center gap-3 relative z-30 lg:shrink-0">
         {['superadmin', 'admin', 'secretaria_academica', 'admin_admision'].includes(userRole) && (
-          <ProgramaFilter value={currentPrograma} onChange={setCurrentPrograma} />
+          <ProgramaFilter
+            value={currentPrograma}
+            onChange={setCurrentPrograma}
+            programas={programas}
+            loading={programasLoading}
+          />
         )}
         <div className="group flex-1 flex items-center gap-3 h-[56px] pl-3 pr-3 rounded-xl border-2 border-slate-200 bg-white shadow-md transition-all duration-200 focus-within:border-primary/60 focus-within:ring-4 focus-within:ring-primary/15 focus-within:shadow-lg focus-within:shadow-primary/10">
           <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-dark text-white flex items-center justify-center flex-shrink-0 shadow-md shadow-primary/40 transition-transform duration-200 group-focus-within:scale-105">
@@ -1331,9 +1399,9 @@ export function StudentMaster() {
           {loading ? (
             <div className="w-5 h-5 shrink-0 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
           ) : (
-            students.length > 0 && (
+            studentsFiltrados.length > 0 && (
               <span className="hidden sm:inline-flex shrink-0 items-center gap-1.5 px-2.5 py-1 rounded-lg bg-primary-soft text-primary-dark text-xs font-bold border border-primary/15">
-                <Users size={13} className="text-primary" /> {students.length}
+                <Users size={13} className="text-primary" /> {studentsFiltrados.length}
               </span>
             )
           )}
@@ -1357,7 +1425,7 @@ export function StudentMaster() {
             <p className="mt-0.5 text-red-700">{loadError}</p>
           </div>
           <button
-            onClick={() => handleSearch(searchTerm)}
+            onClick={() => cargarEstudiantes()}
             className="shrink-0 rounded-lg border border-red-300 bg-white px-3 py-1.5 font-medium hover:bg-red-100"
           >
             Reintentar
@@ -1378,10 +1446,10 @@ export function StudentMaster() {
             <span className="px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-black text-xs border border-primary/20">
               {totalStudents} {totalStudents === 1 ? 'registrado' : 'registrados'}
             </span>
-            {currentPrograma !== 'ALL' && (
+            {programaEfectivo !== 'ALL' && (
               <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold text-xs border border-slate-200 truncate max-w-[260px]">
                 <GraduationCap size={13} className="text-primary shrink-0" />
-                <span className="truncate">{getProgramaLabel(currentPrograma)}</span>
+                <span className="truncate">{getProgramaLabel(programaEfectivo)}</span>
               </span>
             )}
           </div>
@@ -1487,11 +1555,11 @@ export function StudentMaster() {
                       <td className="py-3.5 px-4">
                         <span
                           className="inline-flex items-center gap-1.5 max-w-[240px] truncate rounded-lg border border-primary/20 bg-primary/5 px-2.5 py-1 text-xs font-extrabold text-primary-dark shadow-xs"
-                          title={s.programa_id ? getProgramaLabel(s.programa_id) : 'Sin carrera'}
+                          title={s.programa_id ? getProgramaLabel(s.programa_id) : SIN_PROGRAMA}
                         >
                           <GraduationCap size={13} className="shrink-0 text-primary" />
                           <span className="truncate">
-                            {s.programa_id ? getProgramaLabel(s.programa_id) : 'Sin carrera'}
+                            {s.programa_id ? getProgramaLabel(s.programa_id) : SIN_PROGRAMA}
                           </span>
                         </span>
                       </td>
@@ -1756,11 +1824,12 @@ export function StudentMaster() {
 
       {editingStudent && (
         <EditStudentModal
+          key={editingStudent.id}
           student={editingStudent}
           onClose={() => setEditingStudent(null)}
           onUpdated={() => {
             setEditingStudent(null);
-            handleSearch('');
+            cargarEstudiantes();
           }}
         />
       )}
