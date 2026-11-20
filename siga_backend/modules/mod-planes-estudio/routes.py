@@ -213,6 +213,42 @@ async def importar_plan_minedu(
         for k in valid_plan_fields:
             if k in data and data[k] is not None:
                 setattr(existing_plan, k, data[k])
+
+        # Sincronizar módulos y unidades del plan existente
+        for mod_data in data.get("modulos", []):
+            unidades_data = mod_data.pop("unidades", [])
+            res_m = await db.execute(
+                select(ModuloPlan).where(
+                    ModuloPlan.plan_id == existing_plan.id,
+                    ModuloPlan.nombre == mod_data.get("nombre")
+                )
+            )
+            db_modulo = res_m.scalar_one_or_none()
+            if db_modulo:
+                for mk, mv in mod_data.items():
+                    if mv is not None:
+                        setattr(db_modulo, mk, mv)
+            else:
+                db_modulo = ModuloPlan(**mod_data, plan_id=existing_plan.id)
+                db.add(db_modulo)
+                await db.flush()
+
+            for ud_data in unidades_data:
+                res_u = await db.execute(
+                    select(UnidadPlan).where(
+                        UnidadPlan.modulo_id == db_modulo.id,
+                        UnidadPlan.nombre == ud_data.get("nombre")
+                    )
+                )
+                db_unidad = res_u.scalar_one_or_none()
+                if db_unidad:
+                    for uk, uv in ud_data.items():
+                        if uv is not None:
+                            setattr(db_unidad, uk, uv)
+                else:
+                    db_unidad = UnidadPlan(**ud_data, modulo_id=db_modulo.id)
+                    db.add(db_unidad)
+
         await db.commit()
         await db.refresh(existing_plan)
         return {

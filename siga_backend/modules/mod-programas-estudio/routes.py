@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, status, Request
+from fastapi import APIRouter, HTTPException, Depends, status, Request, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, text
 from typing import List, Optional
@@ -79,10 +79,14 @@ async def crear_programa(programa: ProgramaCreate, request: Request, db: AsyncSe
 
     all_existentes = (await db.execute(select(ProgramaEstudio))).scalars().all()
     for p in all_existentes:
-        if p.codigo and p.codigo.strip().upper() == codigo_norm:
-            raise HTTPException(status_code=400, detail=f"Ya existe un programa de estudio con el código '{programa.codigo}'")
-        if normalize_str(p.nombre) == nombre_norm:
-            raise HTTPException(status_code=400, detail=f"El programa de estudio '{programa.nombre}' ya existe en el catálogo institucional")
+        if (p.codigo and p.codigo.strip().upper() == codigo_norm) or (normalize_str(p.nombre) == nombre_norm):
+            # Si ya existe un programa con este código o nombre, actualizarlo de forma idempotente
+            for field, value in programa.model_dump().items():
+                if value is not None:
+                    setattr(p, field, value)
+            await db.commit()
+            await db.refresh(p)
+            return p
 
     db_programa = ProgramaEstudio(**programa.model_dump())
     db.add(db_programa)
@@ -365,7 +369,23 @@ async def guardar_configuracion_programa(programa_id: int, config_data: Programa
     }
 
 @router.post("/programas/{programa_id}/modulos", status_code=status.HTTP_201_CREATED)
-async def agregar_modulo(programa_id: int, modulo_data: dict, request: Request, db: AsyncSession = Depends(get_db)):
+async def agregar_modulo(programa_id: int, request: Request, modulo_data: dict = Body(...), db: AsyncSession = Depends(get_db)):
+    # Evitar duplicados si el módulo ya existe en este programa
+    res_mod = await db.execute(
+        select(ProgramaModulo).where(
+            ProgramaModulo.programa_id == programa_id,
+            ProgramaModulo.nombre == modulo_data.get("nombre")
+        )
+    )
+    db_modulo = res_mod.scalar_one_or_none()
+    if db_modulo:
+        for k, v in modulo_data.items():
+            if v is not None:
+                setattr(db_modulo, k, v)
+        await db.commit()
+        await db.refresh(db_modulo)
+        return db_modulo
+
     db_modulo = ProgramaModulo(programa_id=programa_id, **modulo_data)
     db.add(db_modulo)
     await db.flush()
@@ -386,7 +406,23 @@ async def agregar_modulo(programa_id: int, modulo_data: dict, request: Request, 
     return db_modulo
 
 @router.post("/modulos/{modulo_id}/unidades", status_code=status.HTTP_201_CREATED)
-async def agregar_unidad(modulo_id: int, unidad_data: dict, request: Request, db: AsyncSession = Depends(get_db)):
+async def agregar_unidad(modulo_id: int, request: Request, unidad_data: dict = Body(...), db: AsyncSession = Depends(get_db)):
+    # Evitar duplicados si la unidad ya existe en este módulo
+    res_uni = await db.execute(
+        select(ProgramaUnidad).where(
+            ProgramaUnidad.programa_modulo_id == modulo_id,
+            ProgramaUnidad.nombre == unidad_data.get("nombre")
+        )
+    )
+    db_unidad = res_uni.scalar_one_or_none()
+    if db_unidad:
+        for k, v in unidad_data.items():
+            if v is not None:
+                setattr(db_unidad, k, v)
+        await db.commit()
+        await db.refresh(db_unidad)
+        return db_unidad
+
     db_unidad = ProgramaUnidad(programa_modulo_id=modulo_id, **unidad_data)
     db.add(db_unidad)
     await db.flush()

@@ -536,7 +536,7 @@ export function AcademicDashboard() {
         }
       }
 
-      toast.success(`La carrera "${nombreCarrera}" (${codigoCarrera}) y su estructura curricular fueron creadas exitosamente.`);
+      toast.success(`La carrera "${nombreCarrera}" (${codigoCarrera}) y su estructura curricular fueron guardadas y sincronizadas exitosamente.`);
       setShowImportModal(false);
       setImportFile(null);
       setPreviewData(null);
