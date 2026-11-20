@@ -49,9 +49,34 @@
 
 ---
 
-## 4. Estado de los Siguientes Menús (Pendientes)
+## 4. Menú 2: Gestión Académica Central
 
-- [ ] **2. Gestión Académica Central** (Próximo a revisar)
+**Rol principal con acceso en Sidebar:** `superadmin`, `admin`, `secretaria_academica`, `director`.
+
+| Funcionalidad | Estado | Causa del problema | Archivos modificados | Cómo se verificó |
+|---|---|---|---|---|
+| **Subida e Importación de Planes MINEDU (Mismo Código de Carrera)** | ✅ OK | El backend rechazaba con 400 (`detail: Ya existe un programa...`) si la carrera con ese código o nombre ya existía en la base de datos, abortando la importación. | `siga_backend/modules/mod-programas-estudio/routes.py`, `siga_backend/modules/mod-planes-estudio/routes.py`, `siga_frontend/src/modules/academic/AcademicDashboard.jsx` | Modificado para actualización idempotente: sincroniza metadatos del programa, vincula nuevo plan y actualiza/agrega módulos y unidades sin duplicación. Verificado mediante API real con código existente `M2969-3-001`. |
+
+---
+
+## 5. Estado de la Base de Datos
+
+- **Respaldo Previo:** `backups/backup_siga_suiza_2026_20261120_174708.sql` (3.14 MB).
+- **Script de Limpieza Selectiva:** `scripts/clean_carreras_y_estudiantes.sql`.
+- **Estado Actual:**
+  * `estudiantes`: 0 (Limpio)
+  * `matriculas`: 0 (Limpio)
+  * `programas_estudio`: 0 (Limpio)
+  * `planes_estudio`: 0 (Limpio)
+  * `core_users`: 13 (Preservados intactos para inicio de sesión en local, Railway y Vercel)
+  * `core_roles` y `core_permissions`: Preservados intactos
+  * `periodos_academicos`: Preservados intactos
+
+---
+
+## 6. Estado de los Siguientes Menús (Pendientes)
+
+- [ ] **2. Gestión Académica Central** (Revisión completa de pestañas restantes: sedes, mallas, filtros)
 - [ ] **3. Registro de Estudiantes**
 - [ ] **4. Proceso de Matrícula**
 - [ ] **5. Coordinación de Programa**
