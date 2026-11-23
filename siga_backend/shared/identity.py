@@ -163,3 +163,92 @@ async def es_coordinador_de_docente(i: Identity, docente_id: int, db: AsyncSessi
         {"did": docente_id, "pid": i.programa_id}
     )
     return res.fetchone() is not None
+
+
+ROLES_RESTRINGIDOS_POR_PROGRAMA = {
+    "secretaria_academica",
+    "secretaria_programa",
+    "coordinador_programa",
+}
+
+ROLES_ACCESO_GLOBAL_ESTUDIANTES = {
+    "superadmin",
+    "admin",
+    "director",
+    "caja_tesoreria",
+    "oficina_admision",
+    "admin_admision",
+}
+
+
+def programa_autorizado_estudiantes(i: Identity) -> tuple[bool, Optional[int]]:
+    """
+    Determina si el usuario está restringido a una única carrera para consultar/gestionar estudiantes.
+
+    Retorna (restringido, programa_id):
+    - (False, None): acceso global (superadmin, admin, director, tesorería, admisión, etc.).
+    - (True, int): restringido exclusivamente a su programa_estudio_id asignado.
+    - (True, None): rol restringido por carrera sin programa asignado (fail-secure).
+    """
+    if es_superadmin(i) or any(r in ROLES_ACCESO_GLOBAL_ESTUDIANTES for r in i.roles):
+        return False, None
+
+    if any(r in ROLES_RESTRINGIDOS_POR_PROGRAMA for r in i.roles):
+        return True, i.programa_id
+
+    return False, None
+
+
+def resolver_filtro_programa_estudiantes(
+    i: Identity,
+    programa_id_solicitado: Optional[int] = None,
+) -> Optional[int]:
+    """
+    Resuelve el programa_id efectivo para listados/búsquedas de estudiantes.
+    Si el usuario tiene rol restringido por carrera:
+    - Sin carrera asignada -> HTTP 403 (fail-secure).
+    - Solicitando una carrera distinta a la suya -> HTTP 403.
+    - Sin parámetro o coincidente -> retorna su carrera asignada.
+    """
+    restringido, prog_asignado = programa_autorizado_estudiantes(i)
+    if not restringido:
+        return programa_id_solicitado
+
+    if prog_asignado is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Su cuenta no tiene una carrera asignada para consultar estudiantes. Contacte al administrador.",
+        )
+
+    if programa_id_solicitado is not None and int(programa_id_solicitado) != int(prog_asignado):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tiene permisos para acceder a estudiantes de otra carrera.",
+        )
+
+    return prog_asignado
+
+
+def verificar_acceso_estudiante(
+    i: Identity,
+    estudiante_programa_id: Optional[int],
+) -> None:
+    """
+    Verifica que el usuario autenticado tenga permiso para acceder o modificar
+    un estudiante concreto según su programa_id.
+    """
+    restringido, prog_asignado = programa_autorizado_estudiantes(i)
+    if not restringido:
+        return
+
+    if prog_asignado is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Su cuenta no tiene una carrera asignada para acceder a este estudiante.",
+        )
+
+    if estudiante_programa_id is None or int(estudiante_programa_id) != int(prog_asignado):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tiene permisos para acceder a información de estudiantes de otra carrera.",
+        )

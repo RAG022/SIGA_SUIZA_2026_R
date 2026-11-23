@@ -11,8 +11,31 @@ from datetime import datetime
 from typing import List, Optional
 from pathlib import Path
 import uuid
+from shared.identity import (
+    get_identity,
+    resolver_filtro_programa_estudiantes,
+    verificar_acceso_estudiante,
+)
 
 router = APIRouter()
+
+
+async def _obtener_estudiante_autorizado(
+    request: Request,
+    db: AsyncSession,
+    estudiante_id: int,
+    for_update: bool = False,
+) -> Estudiante:
+    """Carga el estudiante por ID y valida que pertenezca al ámbito de carrera del usuario autenticado."""
+    ident = await get_identity(request, db)
+    stmt = select(Estudiante).where(Estudiante.id == estudiante_id)
+    if for_update:
+        stmt = stmt.with_for_update()
+    est = (await db.execute(stmt)).scalar_one_or_none()
+    if not est:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, est.programa_id)
+    return est
 
 FOTO_DIR = Path(__file__).resolve().parent / "uploads" / "fotos"
 ALLOWED_IMAGE_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
@@ -87,10 +110,7 @@ async def obtener_foto(filename: str):
 @router.post("/estudiantes/{estudiante_id}/foto", response_model=EstudianteResponse)
 async def subir_foto(estudiante_id: int, request: Request, file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
     """Sube o reemplaza la foto de un estudiante y guarda la URL en foto_url."""
-    result = await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))
-    db_estudiante = result.scalar_one_or_none()
-    if not db_estudiante:
-        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    db_estudiante = await _obtener_estudiante_autorizado(request, db, estudiante_id)
 
     if file.content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail="Formato de imagen inválido. Use JPG, PNG o WEBP")
@@ -127,10 +147,7 @@ async def subir_foto(estudiante_id: int, request: Request, file: UploadFile = Fi
 @router.delete("/estudiantes/{estudiante_id}/foto", response_model=EstudianteResponse)
 async def eliminar_foto(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     """Elimina la foto de un estudiante (foto_url vuelve a null)."""
-    result = await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))
-    db_estudiante = result.scalar_one_or_none()
-    if not db_estudiante:
-        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    db_estudiante = await _obtener_estudiante_autorizado(request, db, estudiante_id)
 
     if db_estudiante.foto_url:
         _delete_foto(db_estudiante.foto_url)
@@ -250,8 +267,11 @@ async def ingesta_admitidos(request: Request, data: IngestaMasivaRequest, db: As
 
 @router.post("/estudiantes/", response_model=EstudianteResponse, status_code=status.HTTP_201_CREATED)
 async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, data.programa_id)
+
     programas = await _programas_validos(db)
-    if data.programa_id is not None and data.programa_id not in programas:
+    if programa_efectivo is not None and programa_efectivo not in programas:
         raise HTTPException(
             status_code=400,
             detail="El programa de estudios seleccionado no existe en el catálogo.",
@@ -267,7 +287,9 @@ async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSe
         else:
             raise HTTPException(status_code=400, detail="El código de estudiante ya existe. Genere uno nuevo.")
 
-    db_estudiante = Estudiante(**data.model_dump())
+    payload_dict = data.model_dump()
+    payload_dict["programa_id"] = programa_efectivo
+    db_estudiante = Estudiante(**payload_dict)
     db.add(db_estudiante)
     try:
         await db.flush()
@@ -294,11 +316,34 @@ async def crear_estudiante(request: Request, data: EstudianteCreate, db: AsyncSe
     return db_estudiante
 
 @router.get("/estudiantes/")
-async def obtener_estudiantes(programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def obtener_estudiantes(
+    request: Request,
+    programa_id: Optional[int] = None,
+    search: Optional[str] = None,
+    skip: int = 0,
+    limit: Optional[int] = None,
+    db: AsyncSession = Depends(get_db),
+):
+    ident = await get_identity(request, db)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, programa_id)
     try:
         query = select(Estudiante).order_by(Estudiante.apellidos)
-        if programa_id is not None:
-            query = query.where(Estudiante.programa_id == programa_id)
+        if programa_efectivo is not None:
+            query = query.where(Estudiante.programa_id == programa_efectivo)
+        if search and search.strip():
+            patron = f"%{search.strip()}%"
+            query = query.where(
+                or_(
+                    Estudiante.dni.ilike(patron),
+                    Estudiante.nombres.ilike(patron),
+                    Estudiante.apellidos.ilike(patron),
+                    Estudiante.codigo_estudiante.ilike(patron),
+                )
+            )
+        if skip > 0:
+            query = query.offset(skip)
+        if limit is not None and limit > 0:
+            query = query.limit(limit)
         result = await db.execute(query)
         rows = result.scalars().all()
         # Payload de listado: se excluye metadata_admision (≈1,6 KB por fila)
@@ -340,12 +385,7 @@ async def obtener_siguiente_codigo(db: AsyncSession = Depends(get_db)):
 
 @router.put("/estudiantes/{estudiante_id}/pago_matricula", response_model=EstudianteResponse)
 async def actualizar_pago_matricula(estudiante_id: int, request: Request, pagado: bool = True, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(Estudiante).where(Estudiante.id == estudiante_id).with_for_update()
-    )
-    estudiante = result.scalar_one_or_none()
-    if not estudiante:
-        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    estudiante = await _obtener_estudiante_autorizado(request, db, estudiante_id, for_update=True)
 
     if estudiante.pago_matricula == pagado:
         # Idempotente: el estado ya es el solicitado (reintento o doble envio).
@@ -358,12 +398,8 @@ async def actualizar_pago_matricula(estudiante_id: int, request: Request, pagado
     return estudiante
 
 @router.get("/estudiantes/{estudiante_id}", response_model=EstudianteResponse)
-async def obtener_estudiante(estudiante_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))
-    db_estudiante = result.scalar_one_or_none()
-    if not db_estudiante:
-        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    return db_estudiante
+async def obtener_estudiante(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    return await _obtener_estudiante_autorizado(request, db, estudiante_id)
 
 _ROMANOS = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII']
 
@@ -553,13 +589,10 @@ async def _periodo_por_defecto_boletin(db, estudiante_id):
     raise HTTPException(status_code=404, detail="No hay periodos academicos registrados")
 
 @router.get("/estudiantes/{estudiante_id}/boletin")
-async def obtener_boletin(estudiante_id: int, periodo_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def obtener_boletin(estudiante_id: int, request: Request, periodo_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     from sqlalchemy import text
 
-    result_est = await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))
-    estudiante = result_est.scalar_one_or_none()
-    if not estudiante:
-        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    estudiante = await _obtener_estudiante_autorizado(request, db, estudiante_id)
 
     if periodo_id is None:
         periodo_id = await _periodo_por_defecto_boletin(db, estudiante_id)
@@ -723,14 +756,17 @@ async def obtener_boletin(estudiante_id: int, periodo_id: Optional[int] = None, 
 
 @router.put("/estudiantes/{estudiante_id}", response_model=EstudianteResponse)
 async def actualizar_estudiante(estudiante_id: int, data: EstudianteUpdate, request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
     result = await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))
     db_estudiante = result.scalar_one_or_none()
     if not db_estudiante:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, db_estudiante.programa_id)
 
     update_data = data.model_dump(exclude_unset=True)
 
-    if update_data.get("programa_id") is not None:
+    if "programa_id" in update_data and update_data["programa_id"] is not None:
+        resolver_filtro_programa_estudiantes(ident, update_data["programa_id"])
         programas = await _programas_validos(db)
         if update_data["programa_id"] not in programas:
             raise HTTPException(
@@ -765,10 +801,7 @@ async def actualizar_estudiante(estudiante_id: int, data: EstudianteUpdate, requ
 
 @router.delete("/estudiantes/{estudiante_id}")
 async def eliminar_estudiante(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))
-    db_estudiante = result.scalar_one_or_none()
-    if not db_estudiante:
-        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    db_estudiante = await _obtener_estudiante_autorizado(request, db, estudiante_id)
 
     foto = db_estudiante.foto_url
 
@@ -871,7 +904,8 @@ async def obtener_matriculas(db: AsyncSession = Depends(get_db)):
     return result.scalars().all()
 
 @router.get("/matriculas/estudiante/{estudiante_id}", response_model=List[MatriculaResponse])
-async def obtener_matriculas_estudiante(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_matriculas_estudiante(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _obtener_estudiante_autorizado(request, db, estudiante_id)
     result = await db.execute(select(Matricula).options(selectinload(Matricula.detalles)).where(Matricula.estudiante_id == estudiante_id).order_by(Matricula.created_at.desc()))
     return result.scalars().all()
 
@@ -1001,7 +1035,8 @@ from models import SolicitudTramite, ResolucionConvalidacion, ConvalidacionDetal
 ESTADOS_TRAMITE = {"pendiente", "en_proceso", "emitido", "rechazado", "aprobado"}
 
 @router.post("/tramites/", response_model=SolicitudTramiteResponse, status_code=status.HTTP_201_CREATED)
-async def crear_tramite(data: SolicitudTramiteCreate, db: AsyncSession = Depends(get_db)):
+async def crear_tramite(data: SolicitudTramiteCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _obtener_estudiante_autorizado(request, db, data.estudiante_id)
     db_tramite = SolicitudTramite(**data.model_dump())
     db.add(db_tramite)
     await db.commit()
@@ -1009,7 +1044,8 @@ async def crear_tramite(data: SolicitudTramiteCreate, db: AsyncSession = Depends
     return db_tramite
 
 @router.get("/tramites/estudiante/{estudiante_id}", response_model=List[SolicitudTramiteResponse])
-async def obtener_tramites_estudiante(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_tramites_estudiante(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _obtener_estudiante_autorizado(request, db, estudiante_id)
     result = await db.execute(
         select(SolicitudTramite)
         .where(SolicitudTramite.estudiante_id == estudiante_id)
@@ -1018,18 +1054,26 @@ async def obtener_tramites_estudiante(estudiante_id: int, db: AsyncSession = Dep
     return result.scalars().all()
 
 @router.get("/tramites/", response_model=List[SolicitudTramiteResponse])
-async def obtener_tramites(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(SolicitudTramite).order_by(SolicitudTramite.fecha_solicitud.desc()))
+async def obtener_tramites(request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, None)
+    query = select(SolicitudTramite).order_by(SolicitudTramite.fecha_solicitud.desc())
+    if programa_efectivo is not None:
+        query = query.join(Estudiante, Estudiante.id == SolicitudTramite.estudiante_id).where(
+            Estudiante.programa_id == programa_efectivo
+        )
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.put("/tramites/{tramite_id}/estado", response_model=SolicitudTramiteResponse)
-async def actualizar_estado_tramite(tramite_id: int, estado: str, db: AsyncSession = Depends(get_db)):
+async def actualizar_estado_tramite(tramite_id: int, estado: str, request: Request, db: AsyncSession = Depends(get_db)):
     if estado not in ESTADOS_TRAMITE:
         raise HTTPException(status_code=400, detail=f"Estado inválido. Use: {', '.join(sorted(ESTADOS_TRAMITE))}")
     result = await db.execute(select(SolicitudTramite).where(SolicitudTramite.id == tramite_id))
     db_tramite = result.scalar_one_or_none()
     if not db_tramite:
         raise HTTPException(status_code=404, detail="Trámite no encontrado")
+    await _obtener_estudiante_autorizado(request, db, db_tramite.estudiante_id)
     
     db_tramite.estado = estado
     if estado in ["emitido", "rechazado", "aprobado"]:
@@ -1040,7 +1084,8 @@ async def actualizar_estado_tramite(tramite_id: int, estado: str, db: AsyncSessi
     return db_tramite
 
 @router.post("/convalidaciones/", response_model=ResolucionConvalidacionResponse, status_code=status.HTTP_201_CREATED)
-async def registrar_convalidacion(data: ResolucionConvalidacionCreate, db: AsyncSession = Depends(get_db)):
+async def registrar_convalidacion(data: ResolucionConvalidacionCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _obtener_estudiante_autorizado(request, db, data.estudiante_id)
     existente = await db.execute(select(ResolucionConvalidacion).where(ResolucionConvalidacion.numero_resolucion == data.numero_resolucion))
     if existente.scalars().first():
         raise HTTPException(status_code=409, detail="Ya existe una resolución con ese número")
@@ -1061,21 +1106,30 @@ async def registrar_convalidacion(data: ResolucionConvalidacionCreate, db: Async
     return result.scalar_one()
 
 @router.get("/convalidaciones/", response_model=List[ResolucionConvalidacionResponse])
-async def listar_convalidaciones(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
+async def listar_convalidaciones(request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, None)
+    query = (
         select(ResolucionConvalidacion)
         .options(selectinload(ResolucionConvalidacion.detalles))
         .order_by(ResolucionConvalidacion.fecha_emision.desc(), ResolucionConvalidacion.id.desc())
     )
+    if programa_efectivo is not None:
+        query = query.join(Estudiante, Estudiante.id == ResolucionConvalidacion.estudiante_id).where(
+            Estudiante.programa_id == programa_efectivo
+        )
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.get("/convalidaciones/estudiante/{estudiante_id}", response_model=List[ResolucionConvalidacionResponse])
-async def obtener_convalidaciones_estudiante(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_convalidaciones_estudiante(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _obtener_estudiante_autorizado(request, db, estudiante_id)
     result = await db.execute(select(ResolucionConvalidacion).options(selectinload(ResolucionConvalidacion.detalles)).where(ResolucionConvalidacion.estudiante_id == estudiante_id))
     return result.scalars().all()
 
 @router.post("/beneficios/", response_model=BeneficioEstudianteResponse, status_code=status.HTTP_201_CREATED)
-async def registrar_beneficio(data: BeneficioEstudianteCreate, db: AsyncSession = Depends(get_db)):
+async def registrar_beneficio(data: BeneficioEstudianteCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _obtener_estudiante_autorizado(request, db, data.estudiante_id)
     if not 0 < data.porcentaje_descuento <= 100:
         raise HTTPException(status_code=400, detail="El porcentaje de descuento debe estar entre 0 y 100")
     db_beneficio = BeneficioEstudiante(**data.model_dump())
@@ -1085,23 +1139,32 @@ async def registrar_beneficio(data: BeneficioEstudianteCreate, db: AsyncSession 
     return db_beneficio
 
 @router.get("/beneficios/", response_model=List[BeneficioEstudianteResponse])
-async def listar_beneficios(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(BeneficioEstudiante).order_by(BeneficioEstudiante.id.desc()))
+async def listar_beneficios(request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, None)
+    query = select(BeneficioEstudiante).order_by(BeneficioEstudiante.id.desc())
+    if programa_efectivo is not None:
+        query = query.join(Estudiante, Estudiante.id == BeneficioEstudiante.estudiante_id).where(
+            Estudiante.programa_id == programa_efectivo
+        )
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.put("/beneficios/{beneficio_id}/desactivar", response_model=BeneficioEstudianteResponse)
-async def desactivar_beneficio(beneficio_id: int, db: AsyncSession = Depends(get_db)):
+async def desactivar_beneficio(beneficio_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(BeneficioEstudiante).where(BeneficioEstudiante.id == beneficio_id))
     db_beneficio = result.scalar_one_or_none()
     if not db_beneficio:
         raise HTTPException(status_code=404, detail="Beneficio no encontrado")
+    await _obtener_estudiante_autorizado(request, db, db_beneficio.estudiante_id)
     db_beneficio.activo = False
     await db.commit()
     await db.refresh(db_beneficio)
     return db_beneficio
 
 @router.get("/beneficios/estudiante/{estudiante_id}", response_model=List[BeneficioEstudianteResponse])
-async def obtener_beneficios_estudiante(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_beneficios_estudiante(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _obtener_estudiante_autorizado(request, db, estudiante_id)
     result = await db.execute(select(BeneficioEstudiante).where(BeneficioEstudiante.estudiante_id == estudiante_id, BeneficioEstudiante.activo == True))
     return result.scalars().all()
 

@@ -27,6 +27,7 @@ from sqlalchemy.orm import selectinload
 
 from config import enrollment_settings
 from database import OutboxEvent, get_db
+from shared.identity import get_identity, verificar_acceso_estudiante
 from domain import (
     Casuistica,
     EstadoCurso,
@@ -453,13 +454,15 @@ async def matricular_ingresantes(
 
 
 @router.get("/estudiantes/{estudiante_id}/ficha")
-async def obtener_ficha(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_ficha(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     """Ficha del estudiante (sección 1: "se genera la ficha")."""
+    ident = await get_identity(request, db)
     estudiante = (await db.execute(
         select(Estudiante).where(Estudiante.id == estudiante_id)
     )).scalar_one_or_none()
     if not estudiante:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, estudiante.programa_id)
 
     result = await db.execute(
         select(Matricula)
@@ -1059,8 +1062,15 @@ async def resultado_final(
 # ---------------------------------------------------------------------------
 
 @router.get("/estudiantes/{estudiante_id}/historial")
-async def historial_estudiante(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+async def historial_estudiante(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     """Historial académico: matrículas + estados institucionales."""
+    ident = await get_identity(request, db)
+    est = (await db.execute(
+        select(Estudiante).where(Estudiante.id == estudiante_id)
+    )).scalar_one_or_none()
+    if not est:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, est.programa_id)
     mats = (await db.execute(
         select(Matricula)
         .options(selectinload(Matricula.detalles))
@@ -1105,17 +1115,21 @@ class HistorialEventoRequest(BaseModel):
 
 
 @router.post("/historial/", status_code=status.HTTP_201_CREATED)
-async def registrar_historial(payload: HistorialEventoRequest, db: AsyncSession = Depends(get_db)):
+async def registrar_historial(payload: HistorialEventoRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Registra un estado institucional (Reserva, Reingreso, Egreso, Abandono...)."""
+    ident = await get_identity(request, db)
+    est = (await db.execute(
+        select(Estudiante).where(Estudiante.id == payload.estudiante_id)
+    )).scalar_one_or_none()
+    if not est:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, est.programa_id)
+
     evento = HistorialAcademico(**payload.model_dump())
     db.add(evento)
 
     # Reflejar el estado en el expediente del estudiante.
-    est = (await db.execute(
-        select(Estudiante).where(Estudiante.id == payload.estudiante_id)
-    )).scalar_one_or_none()
-    if est:
-        est.estado_academico = payload.estado.lower()
+    est.estado_academico = payload.estado.lower()
 
     await db.commit()
     await db.refresh(evento)
@@ -1181,13 +1195,15 @@ async def _calcular_avance(db: AsyncSession, estudiante_id: int, programa_id: in
 
 
 @router.get("/estudiantes/{estudiante_id}/avance")
-async def avance_estudiante(estudiante_id: int, programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def avance_estudiante(estudiante_id: int, request: Request, programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
     """Avance de créditos y ciclo actual del estudiante (sección 8)."""
+    ident = await get_identity(request, db)
     est = (await db.execute(
         select(Estudiante).where(Estudiante.id == estudiante_id)
     )).scalar_one_or_none()
     if not est:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, est.programa_id)
     prog = programa_id or est.programa_id
     if not prog:
         raise HTTPException(status_code=400, detail="El estudiante no tiene programa asignado")

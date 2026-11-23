@@ -555,10 +555,11 @@ export function StudentMaster() {
   };
   const missingBySector = (stepId) => (SECTOR_REQUIRED[stepId] || []).filter(isFieldMissing);
   const sectorHasMissing = (stepId) => missingBySector(stepId).length > 0;
-  // Secretaría de programa: el alcance sale del usuario (no de IDs fijos) y se
-  // deriva del render en lugar de mutar el estado dentro de un effect.
+  // Secretaría / Coordinación con carrera asignada: el alcance sale del usuario
+  // autenticado y además el backend impone la misma restricción de forma estricta.
+  const esRolRestringidoPrograma = ['secretaria_academica', 'secretaria_programa', 'coordinador_programa'].includes(userRole);
   const programaRestringido =
-    userRole === 'secretaria_programa' && user?.programa_id ? String(user.programa_id) : null;
+    esRolRestringidoPrograma && user?.programa_id ? String(user.programa_id) : null;
   const programaEfectivo = programaRestringido ?? currentPrograma;
 
   const defaultProgramaId = () => {
@@ -1084,9 +1085,10 @@ export function StudentMaster() {
                   required
                   showMissing={showMissing}
                   options={programaOptions}
-                  value={form.programa_id}
+                  value={programaRestringido || form.programa_id}
                   onChange={(programaId) => setForm({ ...form, programa_id: programaId })}
                   placeholder="Buscar carrera..."
+                  disabled={Boolean(programaRestringido)}
                 />
               </div>
               <div className="sm:col-span-2">
@@ -1374,13 +1376,24 @@ export function StudentMaster() {
       </div>
 
       <div className="glass-card p-3 mb-6 flex flex-col md:flex-row md:items-center gap-3 relative z-30 lg:shrink-0">
-        {['superadmin', 'admin', 'secretaria_academica', 'admin_admision'].includes(userRole) && (
+        {!esRolRestringidoPrograma && ['superadmin', 'admin', 'admin_admision'].includes(userRole) && (
           <ProgramaFilter
             value={currentPrograma}
             onChange={setCurrentPrograma}
             programas={programas}
             loading={programasLoading}
           />
+        )}
+        {programaRestringido && (
+          <div className="flex items-center gap-3 h-[56px] px-4 rounded-xl border-2 border-primary/25 bg-primary/5 shadow-xs md:max-w-sm">
+            <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-primary to-primary-dark text-white flex items-center justify-center flex-shrink-0 shadow-sm">
+              <GraduationCap size={17} />
+            </span>
+            <div className="min-w-0">
+              <span className="block text-[10px] font-bold uppercase tracking-wider text-primary/70 leading-none mb-1">Carrera Asignada</span>
+              <span className="block text-sm font-bold text-slate-text truncate">{getProgramaLabel(programaRestringido)}</span>
+            </div>
+          </div>
         )}
         <div className="group flex-1 flex items-center gap-3 h-[56px] pl-3 pr-3 rounded-xl border-2 border-slate-200 bg-white shadow-md transition-all duration-200 focus-within:border-primary/60 focus-within:ring-4 focus-within:ring-primary/15 focus-within:shadow-lg focus-within:shadow-primary/10">
           <span className="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-dark text-white flex items-center justify-center flex-shrink-0 shadow-md shadow-primary/40 transition-transform duration-200 group-focus-within:scale-105">

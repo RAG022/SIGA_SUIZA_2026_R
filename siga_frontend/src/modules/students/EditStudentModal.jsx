@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { API_BASE } from '../../core/api/client';
+import { useAuth } from '../../core/auth/useAuth';
 import techBg from '../../assets/tech-bg.jpg';
 import { useProgramas } from './useProgramas';
 import { DEPARTAMENTOS, getProvincias, getDistritos } from './ubigeoPeru';
@@ -274,6 +275,9 @@ const crearFormDesdeEstudiante = (student) => {
 };
 
 export function EditStudentModal({ student, onClose, onUpdated }) {
+  const { user } = useAuth();
+  const userRoles = user?.roles ? user.roles.map(r => typeof r === 'string' ? r : r.nombre || r.name) : [];
+  const programaBloqueado = !user?.is_superuser && userRoles.some(r => ['secretaria_academica', 'secretaria_programa', 'coordinador_programa'].includes(r));
   const [form, setForm] = useState(() => crearFormDesdeEstudiante(student));
   const { programas, loading: programasLoading } = useProgramas();
   const [loading, setLoading] = useState(false);
@@ -497,6 +501,8 @@ export function EditStudentModal({ student, onClose, onUpdated }) {
                   value={form.programa_id}
                   onChange={(val) => handleChange('programa_id', val)}
                   options={programaOptions}
+                  disabled={programaBloqueado}
+                  readOnly={programaBloqueado}
                 />
                 <EditField label="Estado Académico" value={student.estado_academico || 'postulante'} readOnly icon={Lock} />
               </div>
