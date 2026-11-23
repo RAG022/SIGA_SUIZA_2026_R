@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   UserPlus, UserCog, QrCode, Scale, HeartHandshake,
   ShieldAlert, Trophy, Users, FolderOpen, PlusCircle, GraduationCap,
 } from 'lucide-react';
 import { API_BASE } from '../../core/api/client';
 import { useAuth } from '../../core/auth/useAuth';
+import { useProgramas } from '../students/useProgramas';
 import { EnrollmentProcess } from './EnrollmentProcess';
 import { EnrollmentFlowDiagram } from './EnrollmentFlowDiagram';
 import { AdmissionPanel } from './AdmissionPanel';
@@ -23,40 +24,52 @@ export function EnrollmentDashboard() {
   const userRoles = user?.roles ? user.roles.map(r => typeof r === 'string' ? r : r.nombre || r.name) : [];
   const primaryRole = user?.is_superuser ? 'superadmin' : (userRoles.length > 0 ? userRoles[0] : (user?.role || 'invitado'));
   const userRole = primaryRole;
+  const { programas } = useProgramas();
+  const esRolRestringido = !user?.is_superuser && userRoles.some(r => ['secretaria_programa', 'secretaria_academica', 'coordinador_programa'].includes(r));
+  const programaRestringido = esRolRestringido && user?.programa_id ? String(user.programa_id) : null;
+
   const [students, setStudents] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [view, setView] = useState('list'); // 'list', 'process' or 'diagram'
   const [selectedStudent, setSelectedStudent] = useState(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPrograma, setCurrentPrograma] = useState('ALL');
+  const programaEfectivo = programaRestringido ?? currentPrograma;
 
+  const programaOptions = useMemo(
+    () => [{ id: 'ALL', label: 'Todos los Programas' }, ...programas],
+    [programas]
+  );
 
-  const fetchStudents = async (searchVal = searchTerm) => {
+  const programaLabel = (id) => {
+    const p = programaOptions.find(o => String(o.id) === String(id));
+    return p ? p.label : (id ? `Programa ${id}` : 'Todos los Programas');
+  };
+
+  const fetchStudents = async () => {
     setLoading(true);
+    setLoadError('');
     try {
       let url = `${API_BASE}/api/mod-gestion-academica/estudiantes/`;
-      if (currentPrograma && currentPrograma !== 'ALL') {
-        url += `?programa_id=${currentPrograma}`;
+      if (programaEfectivo && programaEfectivo !== 'ALL') {
+        url += `?programa_id=${encodeURIComponent(programaEfectivo)}`;
       }
       
       const response = await fetch(url, {
         headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
       });
-      const data = await response.json();
-      
-      let finalData = Array.isArray(data) ? data : [];
-      if (searchVal.length >= 3) {
-        finalData = finalData.filter(s => 
-          (s.dni && s.dni.includes(searchVal)) || 
-          (s.nombres && s.nombres.toLowerCase().includes(searchVal.toLowerCase())) || 
-          (s.apellidos && s.apellidos.toLowerCase().includes(searchVal.toLowerCase())) || 
-          (s.codigo_estudiante && s.codigo_estudiante.includes(searchVal))
-        );
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.detail || `Error HTTP ${response.status} al cargar estudiantes.`);
       }
-      setStudents(finalData);
+      const data = await response.json();
+      setStudents(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching students:', error);
+      setStudents([]);
+      setLoadError(error.message || 'No se pudieron cargar los estudiantes.');
     } finally {
       setLoading(false);
     }
@@ -64,16 +77,22 @@ export function EnrollmentDashboard() {
 
   useEffect(() => {
     if (userRole !== 'invitado') {
-      if (userRole === 'secretaria_programa' && currentPrograma === 'ALL') {
-        const fallbackId = user?.email === 'secretaria_prog@siga.edu' ? '2' : '1';
-        setCurrentPrograma(user?.programa_id ? String(user.programa_id) : fallbackId);
-      } else {
-        fetchStudents();
-      }
+      fetchStudents();
     }
-    // Solo debe re-ejecutarse al cambiar de programa o rol (no en cada tecla del buscador).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentPrograma, userRole]);
+  }, [programaEfectivo, userRole]);
+
+  const filteredStudents = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (q.length < 2) return students;
+    return students.filter(s =>
+      (s.dni && s.dni.toLowerCase().includes(q)) ||
+      (s.nombres && s.nombres.toLowerCase().includes(q)) ||
+      (s.apellidos && s.apellidos.toLowerCase().includes(q)) ||
+      (s.codigo_estudiante && s.codigo_estudiante.toLowerCase().includes(q)) ||
+      `${s.apellidos || ''} ${s.nombres || ''}`.toLowerCase().includes(q)
+    );
+  }, [students, searchTerm]);
 
   const handleEnrollClick = (student) => {
     setSelectedStudent(student);
@@ -212,7 +231,7 @@ export function EnrollmentDashboard() {
       />
 
       <div className="glass-card p-2 mb-8 flex items-center max-w-3xl gap-2">
-        {['superadmin', 'admin'].includes(userRole) && (
+        {!esRolRestringido && ['superadmin', 'admin'].includes(userRole) && (
           <select 
             className="input-field py-3 text-sm bg-slate-50 border-none w-48 font-bold text-primary"
             value={currentPrograma}
@@ -220,14 +239,15 @@ export function EnrollmentDashboard() {
               setCurrentPrograma(e.target.value);
             }}
           >
-            <option value="ALL">Todos los Programas</option>
-            <option value="1">Arquitectura de Plat.</option>
-            <option value="2">Enfermería Técnica</option>
-            <option value="3">Diseño Gráfico</option>
-            <option value="4">Administración</option>
-            <option value="5">Contabilidad</option>
-            <option value="6">Mecatrónica</option>
+            {programaOptions.map(p => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
           </select>
+        )}
+        {programaRestringido && (
+          <span className="px-3 py-2 rounded-xl bg-primary/10 text-primary text-xs font-bold whitespace-nowrap">
+            {programaLabel(programaRestringido)}
+          </span>
         )}
         <span className="px-4 text-slate-400 text-xl">🔍</span>
         <input 
@@ -235,13 +255,16 @@ export function EnrollmentDashboard() {
           className="w-full bg-transparent border-none focus:ring-0 py-3 text-slate-700 placeholder-slate-400 outline-none"
           placeholder="Buscar por DNI, Nombre o Código..."
           value={searchTerm} 
-          onChange={(e) => {
-            setSearchTerm(e.target.value);
-            fetchStudents(e.target.value);
-          }}
+          onChange={(e) => setSearchTerm(e.target.value)}
         />
         {loading && <div className="w-5 h-5 border-2 border-primary border-t-transparent rounded-full animate-spin mx-4"></div>}
       </div>
+
+      {loadError && (
+        <div className="mb-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 font-medium">
+          {loadError}
+        </div>
+      )}
 
       <div className="glass-card p-6">
         <div className="overflow-x-auto">
@@ -264,7 +287,7 @@ export function EnrollmentDashboard() {
                     <p className="text-slate-500 font-medium">Cargando estudiantes...</p>
                   </td>
                 </tr>
-              ) : students.length === 0 ? (
+              ) : filteredStudents.length === 0 ? (
                 <tr>
                   <td colSpan="6" className="py-12 text-center">
                     <div className="text-4xl mb-3 opacity-50">🎓</div>
@@ -272,7 +295,7 @@ export function EnrollmentDashboard() {
                   </td>
                 </tr>
               ) : (
-                students.map(student => (
+                filteredStudents.map(student => (
                   <tr key={student.id} className="hover:bg-slate-50 transition-colors">
                     <td className="py-3 px-4 font-bold text-slate-700">{student.codigo_estudiante}</td>
                     <td className="py-3 px-4 text-slate-800 font-medium">{student.nombres} {student.apellidos}</td>
@@ -302,7 +325,7 @@ export function EnrollmentDashboard() {
       <ExtraordinaryEnrollmentModal
         isOpen={isModalOpen}
         onClose={() => setIsModalOpen(false)}
-        currentPrograma={currentPrograma}
+        currentPrograma={programaEfectivo}
         userRole={userRole}
         onSuccess={(student) => {
           handleEnrollClick(student);

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Lock, ShieldAlert } from 'lucide-react';
 import { apiClient } from '../../core/api/client';
+import { useAuth } from '../../core/auth/useAuth';
 import { SectionInfoBlock } from './SectionInfoBlock';
 import { getDefaultPeriod, getPeriodLabel } from './periodUtils';
 
@@ -13,6 +14,11 @@ const REGLAS = [
 
 /** Sección 6 del diagrama — Restricciones de créditos y académicas. */
 export function RestriccionesPanel() {
+  const { user } = useAuth();
+  const userRoles = user?.roles ? user.roles.map(r => typeof r === 'string' ? r : r.nombre || r.name) : [];
+  const programaRestringido = !user?.is_superuser && userRoles.some(r => ['secretaria_programa', 'secretaria_academica', 'coordinador_programa'].includes(r)) && user?.programa_id
+    ? String(user.programa_id)
+    : null;
   const [students, setStudents] = useState([]);
   const [programs, setPrograms] = useState([]);
   const [periods, setPeriods] = useState([]);
@@ -35,11 +41,13 @@ export function RestriccionesPanel() {
           apiClient.request('/api/mod-programas-estudio/periodos').catch(() => []),
         ]);
         setStudents(Array.isArray(est) ? est : []);
-        const progs = Array.isArray(prog) ? prog : [];
+        const progsRaw = Array.isArray(prog) ? prog : [];
+        const progs = programaRestringido ? progsRaw.filter(item => String(item.id) === programaRestringido) : progsRaw;
         const pers = Array.isArray(per) ? per : [];
         setPrograms(progs);
         setPeriods(pers);
-        if (progs.length > 0) setProgramaId(String(progs[0].id));
+        if (programaRestringido) setProgramaId(programaRestringido);
+        else if (progs.length > 0) setProgramaId(String(progs[0].id));
         const activo = getDefaultPeriod(pers);
         if (activo) setPeriodoId(String(activo.id));
       } catch (e) {

@@ -38,7 +38,7 @@ export function EspecialesPanel() {
   useEffect(() => {
     (async () => {
       try {
-        const est = await apiClient.request('/api/mod-gestion-academica/estudiantes/').catch(() => []);
+        const est = await apiClient.request('/api/mod-gestion-academica/estudiantes/');
         setStudents(Array.isArray(est) ? est : []);
       } catch (e) {
         console.error(e);

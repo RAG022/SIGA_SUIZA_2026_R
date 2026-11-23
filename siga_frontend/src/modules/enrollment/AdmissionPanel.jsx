@@ -4,6 +4,7 @@ import {
   Search, CircleCheckBig, AlertTriangle, Info,
 } from 'lucide-react';
 import { apiClient, API_BASE } from '../../core/api/client';
+import { useAuth } from '../../core/auth/useAuth';
 import { SectionInfoBlock } from './SectionInfoBlock';
 import { getDefaultPeriod, getPeriodLabel, getPeriodLabelById, isHistoricalPeriod, isFirstPeriodOfYear } from './periodUtils';
 import './enrollmentPremium.css';
@@ -16,6 +17,11 @@ import './enrollmentPremium.css';
  * al procesar, mostrando el resumen y la ficha de cada ingresante.
  */
 export function AdmissionPanel() {
+  const { user } = useAuth();
+  const userRoles = user?.roles ? user.roles.map(r => typeof r === 'string' ? r : r.nombre || r.name) : [];
+  const programaRestringido = !user?.is_superuser && userRoles.some(r => ['secretaria_programa', 'secretaria_academica', 'coordinador_programa'].includes(r)) && user?.programa_id
+    ? String(user.programa_id)
+    : null;
   const [programs, setPrograms] = useState([]);
   const [periods, setPeriods] = useState([]);
   const [programaId, setProgramaId] = useState('');
@@ -37,11 +43,13 @@ export function AdmissionPanel() {
           apiClient.request('/api/mod-programas-estudio/programas').catch(() => []),
           apiClient.callModule('mod-programas-estudio', 'periodos').catch(() => []),
         ]);
-        const prog = Array.isArray(p) ? p : [];
+        const progRaw = Array.isArray(p) ? p : [];
+        const prog = programaRestringido ? progRaw.filter(item => String(item.id) === programaRestringido) : progRaw;
         const per = Array.isArray(pe) ? pe : [];
         setPrograms(prog);
         setPeriods(per);
-        if (prog.length > 0) setProgramaId(String(prog[0].id));
+        if (programaRestringido) setProgramaId(programaRestringido);
+        else if (prog.length > 0) setProgramaId(String(prog[0].id));
         const activo = getDefaultPeriod(per);
         if (activo) setPeriodoId(String(activo.id));
       } catch (e) {

@@ -1,16 +1,30 @@
-import { useState } from 'react';
-import { apiClient, API_BASE } from '../../core/api/client';
+import { useState, useEffect } from 'react';
+import { API_BASE } from '../../core/api/client';
+import { useProgramas } from '../students/useProgramas';
 
 export default function ExtraordinaryEnrollmentModal({ isOpen, onClose, onSuccess, currentPrograma, userRole }) {
-  const [formData, setFormData] = useState({
+  const { programas } = useProgramas();
+  const [formData, setFormData] = useState(() => ({
     dni: '',
     nombres: '',
     apellidos: '',
     codigo_estudiante: '',
-    programa_id: currentPrograma === 'ALL' ? '1' : currentPrograma
-  });
+    programa_id: (currentPrograma !== 'ALL' ? currentPrograma : (programas.length === 1 ? programas[0]?.id : '')) || ''
+  }));
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const targetPrograma = (currentPrograma && currentPrograma !== 'ALL')
+      ? String(currentPrograma)
+      : (programas.length === 1 ? String(programas[0]?.id || '') : '');
+    setFormData((prev) => ({
+      ...prev,
+      programa_id: targetPrograma || prev.programa_id,
+    }));
+  }, [isOpen, currentPrograma, programas]);
 
   if (!isOpen) return null;
 
@@ -20,10 +34,9 @@ export default function ExtraordinaryEnrollmentModal({ isOpen, onClose, onSucces
     setError(null);
 
     try {
-      // 1. Create the student
       const studentPayload = {
         ...formData,
-        programa_id: parseInt(formData.programa_id),
+        programa_id: parseInt(formData.programa_id, 10),
         modalidad_admision: 'MIGRACION_HISTORICA',
         estado_academico: 'estudiante'
       };
@@ -32,10 +45,11 @@ export default function ExtraordinaryEnrollmentModal({ isOpen, onClose, onSucces
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiClient.token}`
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
         body: JSON.stringify(studentPayload)
       });
+
 
       if (!resp.ok) {
         const errorData = await resp.json().catch(() => ({}));
@@ -151,12 +165,10 @@ export default function ExtraordinaryEnrollmentModal({ isOpen, onClose, onSucces
                 value={formData.programa_id}
                 onChange={e => setFormData({...formData, programa_id: e.target.value})}
               >
-                <option value="1">Arquitectura de Plataformas y Servicios T.I.</option>
-                <option value="2">Enfermería Técnica</option>
-                <option value="3">Diseño Gráfico</option>
-                <option value="4">Administración</option>
-                <option value="5">Contabilidad</option>
-                <option value="6">Mecatrónica</option>
+                <option value="">Selecciona una carrera...</option>
+                {programas.map(p => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
               </select>
             </div>
           )}

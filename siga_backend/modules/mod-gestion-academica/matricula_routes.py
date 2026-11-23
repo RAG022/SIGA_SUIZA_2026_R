@@ -27,7 +27,11 @@ from sqlalchemy.orm import selectinload
 
 from config import enrollment_settings
 from database import OutboxEvent, get_db
-from shared.identity import get_identity, verificar_acceso_estudiante
+from shared.identity import (
+    get_identity,
+    resolver_filtro_programa_estudiantes,
+    verificar_acceso_estudiante,
+)
 from domain import (
     Casuistica,
     EstadoCurso,
@@ -242,6 +246,12 @@ async def admision_excel(
     - ``matricular=true``: tras crear los estudiantes, ejecuta la matrícula
       automática de Ciclo I para los recién ingresados en ``periodo_id``.
     """
+    ident = await get_identity(request, db)
+    programa_id = resolver_filtro_programa_estudiantes(ident, programa_id)
+    restringido_prog = programa_id is not None and any(
+        r in {"secretaria_academica", "secretaria_programa", "coordinador_programa"} for r in ident.roles
+    ) and not ident.is_superuser and "superadmin" not in ident.roles and "admin" not in ident.roles
+
     nombre = (file.filename or "").lower()
     if not nombre.endswith((".xlsx", ".xls", ".json")):
         raise HTTPException(status_code=400, detail="El archivo debe ser .xlsx, .xls o .json")
@@ -296,12 +306,15 @@ async def admision_excel(
         if ya.scalar_one_or_none():
             existentes += 1
             continue
-        prog = reg["programa_id"] or programa_id
-        try:
-            prog_id = int(prog) if prog else None
-        except (TypeError, ValueError):
-            prog = str(prog).strip()
-            prog_id = int(prog) if prog.isdigit() else programa_id
+        if restringido_prog:
+            prog_id = programa_id
+        else:
+            prog = reg["programa_id"] or programa_id
+            try:
+                prog_id = int(prog) if prog else None
+            except (TypeError, ValueError):
+                prog = str(prog).strip()
+                prog_id = int(prog) if prog.isdigit() else programa_id
         codigo = f"{datetime.now().year}-{reg['dni']}"
         estudiante = Estudiante(
             codigo_estudiante=codigo,
@@ -366,6 +379,9 @@ async def matricular_ingresantes(
     Solo opera en periodos de inicio de año (ej. 2026-I, 2027-I, 2028-I).
     En periodos posteriores (2026-II, etc.) no existen ingresantes ('cachimbos').
     """
+    ident = await get_identity(request, db)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, payload.programa_id)
+
     periodo_info = await fetch_periodo(payload.periodo_id)
     codigo_periodo = periodo_info.get("codigo") if periodo_info else f"ID {payload.periodo_id}"
     if not es_periodo_inicio_anio(codigo_periodo):
@@ -380,8 +396,8 @@ async def matricular_ingresantes(
     query = select(Estudiante)
     if payload.estudiante_ids:
         query = query.where(Estudiante.id.in_(payload.estudiante_ids))
-    if payload.programa_id:
-        query = query.where(Estudiante.programa_id == payload.programa_id)
+    if programa_efectivo is not None:
+        query = query.where(Estudiante.programa_id == programa_efectivo)
     estudiantes = (await db.execute(query)).scalars().all()
 
     creadas, omitidas, sin_malla = [], [], []
@@ -504,6 +520,7 @@ async def propuesta_matricula(
     estudiante_id: int,
     programa_id: int,
     periodo_id: int,
+    request: Request,
     estrategia: Optional[str] = None,
     casuistica: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
@@ -513,6 +530,13 @@ async def propuesta_matricula(
     ``estrategia`` permite forzar ``flexible`` o ``strict``; por defecto usa la
     configuración del entorno (``ENROLLMENT_ENGINE``).
     """
+    ident = await get_identity(request, db)
+    programa_id = resolver_filtro_programa_estudiantes(ident, programa_id)
+    est = (await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))).scalar_one_or_none()
+    if not est:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, est.programa_id)
+
     ctx = await construir_contexto(
         db, estudiante_id, programa_id, periodo_id,
         estrategia=estrategia, casuistica=casuistica,
@@ -540,6 +564,7 @@ async def restricciones_matricula(
     estudiante_id: int,
     programa_id: int,
     periodo_id: int,
+    request: Request,
     estrategia: Optional[str] = None,
     casuistica: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
@@ -549,6 +574,13 @@ async def restricciones_matricula(
     Reutiliza el motor: créditos máximos del plan, límite de unidades
     reprobadas, prerrequisitos no aprobados y el tope de intentos ("tercera vez").
     """
+    ident = await get_identity(request, db)
+    programa_id = resolver_filtro_programa_estudiantes(ident, programa_id)
+    est = (await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))).scalar_one_or_none()
+    if not est:
+        raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, est.programa_id)
+
     ctx = await construir_contexto(
         db, estudiante_id, programa_id, periodo_id,
         estrategia=estrategia, casuistica=casuistica,
@@ -629,6 +661,7 @@ async def restricciones_matricula(
 
 @router.get("/matriculas/tipos-alumnos")
 async def tipos_alumnos(
+    request: Request,
     programa_id: Optional[int] = None,
     tipo: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
@@ -638,8 +671,10 @@ async def tipos_alumnos(
     Devuelve el resumen por tipo y el listado con el detalle del historial.
     ``tipo`` permite filtrar por ``Ingresante`` / ``Invicto`` / ``Jalado`` / ``Historico``.
     """
+    ident = await get_identity(request, db)
+    programa_id = resolver_filtro_programa_estudiantes(ident, programa_id)
     stmt = select(Estudiante)
-    if programa_id:
+    if programa_id is not None:
         stmt = stmt.where(Estudiante.programa_id == programa_id)
     estudiantes = (
         await db.execute(stmt.order_by(Estudiante.apellidos, Estudiante.nombres))
@@ -737,13 +772,15 @@ class EvaluacionCasuisticaRequest(BaseModel):
 
 
 @router.post("/casuisticas/evaluar")
-async def evaluar_casuistica(payload: EvaluacionCasuisticaRequest, db: AsyncSession = Depends(get_db)):
+async def evaluar_casuistica(payload: EvaluacionCasuisticaRequest, request: Request, db: AsyncSession = Depends(get_db)):
     """Verifica los requisitos de las casuísticas especiales (sección 4)."""
+    ident = await get_identity(request, db)
     estud = (await db.execute(
         select(Estudiante).where(Estudiante.id == payload.estudiante_id)
     )).scalar_one_or_none()
     if not estud:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
+    verificar_acceso_estudiante(ident, estud.programa_id)
 
     casuistica = normalizar_casuistica(payload.casuistica) or payload.casuistica
     condiciones = []
@@ -809,7 +846,9 @@ def _generar_codigo_boleta(periodo_id: int) -> str:
 @router.post("/matriculas/{matricula_id}/boleta")
 async def emitir_boleta(matricula_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     """Emite (idempotente) la boleta con código QR único de la matrícula."""
+    ident = await get_identity(request, db)
     matricula = await _obtener_matricula(db, matricula_id)
+    verificar_acceso_estudiante(ident, matricula.programa_id)
     if not matricula.boleta_codigo:
         matricula.boleta_codigo = _generar_codigo_boleta(matricula.periodo_id)
         matricula.boleta_emitida_en = datetime.utcnow()
@@ -840,6 +879,7 @@ def _boleta_payload(matricula: Matricula) -> dict:
 
 @router.get("/matriculas/boletas")
 async def listar_boletas(
+    request: Request,
     periodo_id: Optional[int] = None,
     programa_id: Optional[int] = None,
     q: Optional[str] = None,
@@ -850,6 +890,8 @@ async def listar_boletas(
 
     ``solo_emitidas=true`` devuelve únicamente las boletas ya emitidas.
     """
+    ident = await get_identity(request, db)
+    programa_id = resolver_filtro_programa_estudiantes(ident, programa_id)
     stmt = (
         select(Matricula, Estudiante)
         .join(Estudiante, Estudiante.id == Matricula.estudiante_id)
@@ -858,7 +900,7 @@ async def listar_boletas(
     )
     if periodo_id:
         stmt = stmt.where(Matricula.periodo_id == periodo_id)
-    if programa_id:
+    if programa_id is not None:
         stmt = stmt.where(Matricula.programa_id == programa_id)
     if solo_emitidas:
         stmt = stmt.where(Matricula.boleta_codigo.isnot(None))
@@ -944,7 +986,9 @@ async def validar_boleta(codigo: str, db: AsyncSession = Depends(get_db)):
 @router.post("/matriculas/{matricula_id}/consolidar")
 async def consolidar_matricula(matricula_id: int, request: Request, db: AsyncSession = Depends(get_db)):
     """Cierra el proceso de matrícula en los 5 pasos del diagrama."""
+    ident = await get_identity(request, db)
     matricula = await _obtener_matricula(db, matricula_id)
+    verificar_acceso_estudiante(ident, matricula.programa_id)
     pasos = []
 
     # 1. Consolidar matrícula + registro académico
@@ -992,6 +1036,7 @@ async def consolidar_matricula(matricula_id: int, request: Request, db: AsyncSes
 
 @router.get("/matriculas/resultado")
 async def resultado_final(
+    request: Request,
     periodo_id: Optional[int] = None,
     programa_id: Optional[int] = None,
     q: Optional[str] = None,
@@ -999,6 +1044,8 @@ async def resultado_final(
     db: AsyncSession = Depends(get_db),
 ):
     """Lista las matrículas y su estado de consolidación (resultado final)."""
+    ident = await get_identity(request, db)
+    programa_id = resolver_filtro_programa_estudiantes(ident, programa_id)
     stmt = (
         select(Matricula, Estudiante)
         .join(Estudiante, Estudiante.id == Matricula.estudiante_id)
@@ -1007,7 +1054,7 @@ async def resultado_final(
     )
     if periodo_id:
         stmt = stmt.where(Matricula.periodo_id == periodo_id)
-    if programa_id:
+    if programa_id is not None:
         stmt = stmt.where(Matricula.programa_id == programa_id)
     if solo_pendientes:
         stmt = stmt.where(Matricula.consolidada.isnot(True))

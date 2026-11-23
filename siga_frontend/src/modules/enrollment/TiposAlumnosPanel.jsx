@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { UserCog, Users } from 'lucide-react';
 import { apiClient } from '../../core/api/client';
+import { useAuth } from '../../core/auth/useAuth';
+import { useProgramas } from '../students/useProgramas';
 import { SectionInfoBlock } from './SectionInfoBlock';
 
 const TIPOS = [
@@ -12,6 +14,10 @@ const TIPOS = [
 
 /** Sección 2 del diagrama — Tipos de alumnos históricos. */
 export function TiposAlumnosPanel() {
+  const { user } = useAuth();
+  const { programas: catalogProgramas } = useProgramas();
+  const userRoles = user?.roles ? user.roles.map(r => typeof r === 'string' ? r : r.nombre || r.name) : [];
+  const programaRestringido = !user?.is_superuser && userRoles.some(r => ['secretaria_programa', 'secretaria_academica', 'coordinador_programa'].includes(r));
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -108,16 +114,21 @@ export function TiposAlumnosPanel() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
-        <select
-          className="input-field py-2 text-sm w-48"
-          value={programaFiltro}
-          onChange={(e) => setProgramaFiltro(e.target.value)}
-        >
-          <option value="">Todos los programas</option>
-          {programas.map((p) => (
-            <option key={p} value={p}>Programa {p}</option>
-          ))}
-        </select>
+        {!programaRestringido && (
+          <select
+            className="input-field py-2 text-sm w-56"
+            value={programaFiltro}
+            onChange={(e) => setProgramaFiltro(e.target.value)}
+          >
+            <option value="">Todos los programas</option>
+            {programas.map((p) => {
+              const found = catalogProgramas.find((cp) => String(cp.id) === String(p));
+              return (
+                <option key={p} value={p}>{found ? found.label : `Programa ${p}`}</option>
+              );
+            })}
+          </select>
+        )}
         {(tipoFiltro || programaFiltro || search) && (
           <button
             onClick={() => { setTipoFiltro(''); setProgramaFiltro(''); setSearch(''); }}

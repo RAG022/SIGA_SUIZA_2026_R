@@ -855,13 +855,17 @@ async def eliminar_estudiante(estudiante_id: int, request: Request, db: AsyncSes
 
 @router.post("/matriculas/", response_model=MatriculaResponse, status_code=status.HTTP_201_CREATED)
 async def realizar_matricula(request: Request, data: MatriculaCreate, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    est = await _obtener_estudiante_autorizado(request, db, data.estudiante_id)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, data.programa_id or est.programa_id)
+
     # Validar si ya está matriculado en este periodo
     from sqlalchemy.future import select
     existing = await db.execute(
         select(Matricula).where(
             Matricula.estudiante_id == data.estudiante_id,
             Matricula.periodo_id == data.periodo_id,
-            Matricula.estado_matricula != 'anulado'
+            Matricula.estado_matricula.notin_(["anulado", "anulada"]),
         )
     )
     if existing.scalars().first():
@@ -874,6 +878,8 @@ async def realizar_matricula(request: Request, data: MatriculaCreate, db: AsyncS
 
     # Separar detalles
     matricula_data = data.model_dump(exclude={"detalles"})
+    if programa_efectivo is not None:
+        matricula_data["programa_id"] = programa_efectivo
     db_matricula = Matricula(**matricula_data)
     db.add(db_matricula)
     await db.flush() # Para obtener db_matricula.id
@@ -899,8 +905,13 @@ async def realizar_matricula(request: Request, data: MatriculaCreate, db: AsyncS
     return result.scalar_one()
 
 @router.get("/matriculas/", response_model=List[MatriculaResponse])
-async def obtener_matriculas(db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Matricula).options(selectinload(Matricula.detalles)).order_by(Matricula.created_at.desc()))
+async def obtener_matriculas(request: Request, programa_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
+    programa_efectivo = resolver_filtro_programa_estudiantes(ident, programa_id)
+    query = select(Matricula).options(selectinload(Matricula.detalles)).order_by(Matricula.created_at.desc())
+    if programa_efectivo is not None:
+        query = query.where(Matricula.programa_id == programa_efectivo)
+    result = await db.execute(query)
     return result.scalars().all()
 
 @router.get("/matriculas/estudiante/{estudiante_id}", response_model=List[MatriculaResponse])
@@ -1001,10 +1012,12 @@ async def sincronizar_estudiantes_seccion(unidad_id: int, periodo_id: int, reque
 
 @router.delete("/matriculas/{matricula_id}")
 async def anular_matricula(matricula_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
     result = await db.execute(select(Matricula).where(Matricula.id == matricula_id))
     db_matricula = result.scalar_one_or_none()
     if not db_matricula:
         raise HTTPException(status_code=404, detail="Matrícula no encontrada")
+    verificar_acceso_estudiante(ident, db_matricula.programa_id)
 
     db_matricula.estado_matricula = "anulada"
     

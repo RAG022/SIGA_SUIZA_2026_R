@@ -30,6 +30,7 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
   const [consolidando, setConsolidando] = useState(false);
 
   const [cachedStudents, setCachedStudents] = useState([]);
+  const [allPrograms, setAllPrograms] = useState([]);
 
   // 1. Buscar Estudiante Maestro Optimizado (Caché en cliente para búsqueda instantánea)
   const searchStudent = async (val) => {
@@ -69,6 +70,7 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
       ]);
       const fetchedPrograms = Array.isArray(pRes) ? pRes : [];
       const fetchedPeriods = Array.isArray(peRes) ? peRes : [];
+      setAllPrograms(fetchedPrograms);
       
       console.log("Academic Data Loaded:", {fetchedPrograms, fetchedPeriods, initialStudent});
       
@@ -328,7 +330,11 @@ export function EnrollmentProcess({ initialStudent, onCancel }) {
                   <button 
                     key={s.id} 
                     className="w-full text-left p-4 rounded-xl bg-white border border-slate-100 hover:border-primary/30 hover:shadow-md transition-all flex justify-between items-center group"
-                    onClick={() => { setSelection({...selection, student: s}); setStep(2); }}
+                    onClick={() => {
+                      const matchedProg = allPrograms.find(p => String(p.id) === String(s.programa_id)) || selection.program || allPrograms[0] || null;
+                      setSelection({ ...selection, student: s, program: matchedProg });
+                      setStep(2);
+                    }}
                   >
                     <div className="flex items-center">
                       <div className="w-10 h-10 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold mr-4 group-hover:scale-110 transition-transform">

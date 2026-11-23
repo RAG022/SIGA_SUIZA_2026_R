@@ -68,7 +68,18 @@
 
 ---
 
-## 5. Estado de la Base de Datos
+## 5. Menú 4: Proceso de Matrícula
+
+**Roles con acceso en Sidebar:** `superadmin`, `admin`, `secretaria_academica`, `secretaria_programa`, `coordinador_programa`.
+
+| Funcionalidad | Estado | Causa del problema | Archivos modificados | Cómo se verificó |
+|---|---|---|---|---|
+| **Aislamiento por Rol y Carrera en Endpoints de Matrícula (Backend)** | ✅ OK | Los 13 endpoints de matrícula (`admision/upload-excel`, `admision/matricular-ingresantes`, `matriculas/propuesta`, `matriculas/restricciones`, `matriculas/tipos-alumnos`, `casuisticas/evaluar`, `matriculas/{id}/boleta`, `matriculas/boletas`, `matriculas/{id}/consolidar`, `matriculas/resultado`, `POST/GET/DELETE /matriculas/`) no validaban `get_identity` ni `perfiles_personal.programa_estudio_id`, exponiendo datos de otras carreras. Además `POST /matriculas/` verificaba `estado_matricula != 'anulado'` en vez de `notin_(['anulado', 'anulada'])`, impidiendo rematricular tras anulación. | `siga_backend/modules/mod-gestion-academica/matricula_routes.py`, `siga_backend/modules/mod-gestion-academica/routes.py` | Suite de 19 pruebas RBAC sobre BD real (`lisy@siga.edu` DSI 22, `gil@siga.edu` Coordinador DSI 22, `secretariadeenfermeria@siga.edu` Enfermería 25, 8 ataques cruzados → `403`) + pruebas vía Gateway (`admin@siga.edu` global 781; `secretaria_prog@siga.edu` sin carrera asignada → `403`). |
+| **Dashboard de Matrícula y Paneles por Carrera (Frontend)** | ✅ OK | `EnrollmentDashboard.jsx` permitía cambiar el selector de carrera a `secretaria_academica`/`coordinador_programa` y disparaba fetch en cada tecla; `AdmissionPanel`, `DeterminacionPanel` y `RestriccionesPanel` preseleccionaban `programs[0]` (Mecatrónica) causando 403 en otras carreras; `TiposAlumnosPanel` mostraba IDs crudos (`Programa 22`); `EnrollmentProcess` dejaba `selection.program = null` al elegir estudiante en Paso 1; `ExtraordinaryEnrollmentModal` no sincronizaba `programa_id` al abrir; `EspecialesPanel` ocultaba errores 403 con `.catch(() => [])`. | `siga_frontend/src/modules/enrollment/EnrollmentDashboard.jsx`, `EnrollmentProcess.jsx`, `AdmissionPanel.jsx`, `DeterminacionPanel.jsx`, `RestriccionesPanel.jsx`, `TiposAlumnosPanel.jsx`, `ExtraordinaryEnrollmentModal.jsx`, `EspecialesPanel.jsx` | Bloqueo visual con badge de carrera para roles restringidos, resolución de `selection.program`, sincronización de modal, manejo de errores 403 y compilación `vite build` exitosa (0 errores). |
+
+---
+
+## 6. Estado de la Base de Datos
 
 - **Respaldo Previo:** `backups/backup_siga_suiza_2026_20261120_174708.sql` (3.14 MB).
 - **Script de Limpieza Selectiva:** `scripts/clean_carreras_y_estudiantes.sql`.
@@ -83,11 +94,11 @@
 
 ---
 
-## 6. Estado de los Siguientes Menús (Pendientes)
+## 7. Estado de los Siguientes Menús (Pendientes)
 
 - [ ] **2. Gestión Académica Central** (Revisión completa de pestañas restantes: sedes, mallas, filtros)
-- [ ] **3. Registro de Estudiantes**
-- [ ] **4. Proceso de Matrícula**
+- [x] **3. Registro de Estudiantes** (Aislamiento por carrera y edición verificados)
+- [x] **4. Proceso de Matrícula** (Aislamiento por rol/carrera y paneles corregidos y verificados)
 - [ ] **5. Coordinación de Programa**
 - [ ] **6. Panel Docente**
 - [ ] **7. Supervisión de Actas**
