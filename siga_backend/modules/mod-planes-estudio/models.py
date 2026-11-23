@@ -8,7 +8,7 @@ class PlanEstudio(BaseModel):
     __tablename__ = "planes_estudio"
 
     codigo = Column(String(50), unique=True, nullable=False, index=True)
-    nombre = Column(String(255), nullable=False)
+    nombre = Column(Text, nullable=False)
     descripcion = Column(Text)
     nivel_formativo = Column(String(100))
     creditos_totales = Column(Integer)
@@ -26,7 +26,7 @@ class ModuloPlan(BaseModel):
 
     plan_id = Column(Integer, ForeignKey("planes_estudio.id"), nullable=False)
     codigo = Column(String(50))
-    nombre = Column(String(255), nullable=False)
+    nombre = Column(Text, nullable=False)
     horas = Column(Integer)
     creditos = Column(Integer)
     orden = Column(Integer)
@@ -40,7 +40,7 @@ class UnidadPlan(BaseModel):
 
     modulo_id = Column(Integer, ForeignKey("modulos_plan.id"), nullable=False)
     codigo = Column(String(50))
-    nombre = Column(String(255), nullable=False)
+    nombre = Column(Text, nullable=False)
     horas = Column(Integer)
     creditos = Column(Integer)
     tipo = Column(String(50)) # Teoría/Práctica

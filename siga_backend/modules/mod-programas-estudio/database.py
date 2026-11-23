@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import MetaData
+from sqlalchemy import MetaData, text
 from sqlalchemy.pool import NullPool
 import os
 import sys
@@ -65,6 +65,8 @@ async def init_db():
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all, checkfirst=True)
+            for tbl in ("programas_estudio", "programa_modulos", "programa_unidades"):
+                await conn.execute(text(f"ALTER TABLE {tbl} ALTER COLUMN nombre TYPE TEXT"))
         print("Tablas creadas/verificadas")
     except Exception as e:
         print(f"init_db: tablas ya existen o error menor: {e}")
