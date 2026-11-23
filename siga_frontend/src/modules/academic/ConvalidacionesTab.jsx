@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { apiClient } from '../../core/api/client';
-import { Plus, Trash2, Repeat } from 'lucide-react';
+import { Plus, Trash2, Repeat, Search, X } from 'lucide-react';
 
 const TIPOS = ['Traslado Interno', 'Traslado Externo', 'Cambio de Plan de Estudio', 'Experiencia Formativa'];
 const BASE = '/api/mod-gestion-academica';
@@ -17,6 +17,7 @@ export function ConvalidacionesTab() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(FORM_VACIO);
   const [detalles, setDetalles] = useState([{ ...DETALLE_VACIO }]);
+  const [searchTerm, setSearchTerm] = useState('');
 
   const nombreEstudiante = useMemo(
     () => new Map(estudiantes.map(e => [e.id, `${e.apellidos}, ${e.nombres}`])),
@@ -47,7 +48,10 @@ export function ConvalidacionesTab() {
   // Unidades destino: malla del programa del estudiante elegido
   const programaId = estudiantes.find(e => String(e.id) === String(form.estudiante_id))?.programa_id;
   useEffect(() => {
-    if (!programaId) return;
+    if (!programaId) {
+      setUnidades([]);
+      return;
+    }
     let activo = true;
     apiClient.request(`/api/mod-programas-estudio/programas/${programaId}/malla`)
       .then(malla => {
@@ -57,6 +61,17 @@ export function ConvalidacionesTab() {
       .catch(() => activo && setUnidades([]));
     return () => { activo = false; };
   }, [programaId]);
+
+  const resolucionesFiltradas = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    if (!q) return resoluciones;
+    return resoluciones.filter(r =>
+      (r.numero_resolucion || '').toLowerCase().includes(q) ||
+      (nombreEstudiante.get(r.estudiante_id) || '').toLowerCase().includes(q) ||
+      (r.tipo_convalidacion || '').toLowerCase().includes(q) ||
+      (r.institucion_origen || '').toLowerCase().includes(q)
+    );
+  }, [resoluciones, searchTerm, nombreEstudiante]);
 
   const actualizarDetalle = (i, campo, valor) =>
     setDetalles(prev => prev.map((d, idx) => (idx === i ? { ...d, [campo]: valor } : d)));
@@ -107,10 +122,37 @@ export function ConvalidacionesTab() {
 
       {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>}
 
+      <div className="relative">
+        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+        <input
+          type="text"
+          className="input-field w-full pl-9 pr-8 py-2 text-sm"
+          placeholder="Buscar por N° de resolución, estudiante, tipo o institución..."
+          value={searchTerm}
+          onChange={e => setSearchTerm(e.target.value)}
+        />
+        {searchTerm && (
+          <button
+            type="button"
+            onClick={() => setSearchTerm('')}
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
       {showForm && (
         <form onSubmit={guardar} className="space-y-4 p-4 rounded-xl border border-slate-200 bg-slate-50/50">
           <div className="grid md:grid-cols-2 gap-3">
-            <select className="input-field" value={form.estudiante_id} onChange={e => setForm({ ...form, estudiante_id: e.target.value })}>
+            <select
+              className="input-field"
+              value={form.estudiante_id}
+              onChange={e => {
+                setForm({ ...form, estudiante_id: e.target.value });
+                setDetalles(prev => prev.map(d => ({ ...d, unidad_destino_id: '' })));
+              }}
+            >
               <option value="">Estudiante...</option>
               {estudiantes.map(s => <option key={s.id} value={s.id}>{s.apellidos}, {s.nombres} ({s.dni})</option>)}
             </select>
@@ -160,14 +202,14 @@ export function ConvalidacionesTab() {
 
       {loading ? (
         <div className="text-center py-10"><div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto"></div></div>
-      ) : resoluciones.length === 0 ? (
+      ) : resolucionesFiltradas.length === 0 ? (
         <div className="text-center py-12 text-slate-400">
           <Repeat size={32} className="mx-auto mb-2" />
-          No hay resoluciones de convalidación registradas.
+          {resoluciones.length === 0 ? 'No hay resoluciones de convalidación registradas.' : 'No se encontraron resoluciones con ese criterio.'}
         </div>
       ) : (
         <div className="space-y-3">
-          {resoluciones.map(r => (
+          {resolucionesFiltradas.map(r => (
             <div key={r.id} className="p-4 rounded-xl border border-slate-200 bg-white">
               <div className="flex flex-wrap justify-between gap-2">
                 <div>

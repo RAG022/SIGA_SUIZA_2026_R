@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { apiClient } from '../../core/api/client';
 import { useToast } from '../../core/ui/ToastContext';
-import { Plus, GraduationCap } from 'lucide-react';
+import { Plus, GraduationCap, Search, X } from 'lucide-react';
 
 const TIPOS = ['Beca 18 (PRONABEC)', 'Excelencia Académica', 'Convenio Institucional', 'Convenio FF.AA.', 'Otro'];
 const BASE = '/api/mod-gestion-academica';
@@ -24,12 +24,28 @@ export function BecasTab() {
   const [error, setError] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(FORM_VACIO);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterActivo, setFilterActivo] = useState('todos');
 
   const nombreEstudiante = useMemo(
     () => new Map(estudiantes.map(e => [e.id, `${e.apellidos}, ${e.nombres}`])),
     [estudiantes]
   );
   const codigoPeriodo = useMemo(() => new Map(periodos.map(p => [p.id, p.codigo])), [periodos]);
+
+  const beneficiosFiltrados = useMemo(() => {
+    const q = searchTerm.trim().toLowerCase();
+    return beneficios.filter(b => {
+      if (filterActivo === 'activo' && !b.activo) return false;
+      if (filterActivo === 'inactivo' && b.activo) return false;
+      if (!q) return true;
+      return (
+        (nombreEstudiante.get(b.estudiante_id) || '').toLowerCase().includes(q) ||
+        (b.tipo_beneficio || '').toLowerCase().includes(q) ||
+        (b.condicion_mantenimiento || '').toLowerCase().includes(q)
+      );
+    });
+  }, [beneficios, searchTerm, filterActivo, nombreEstudiante]);
 
   const cargar = async () => {
     setLoading(true);
@@ -114,6 +130,37 @@ export function BecasTab() {
 
       {error && <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</div>}
 
+      <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+        <div className="relative flex-1">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <input
+            type="text"
+            className="input-field w-full pl-9 pr-8 py-2 text-sm"
+            placeholder="Buscar por estudiante, tipo de beca o condición..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => setSearchTerm('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+        <select
+          className="input-field py-2 text-sm sm:w-44"
+          value={filterActivo}
+          onChange={e => setFilterActivo(e.target.value)}
+        >
+          <option value="todos">Todos los estados</option>
+          <option value="activo">Activos</option>
+          <option value="inactivo">Inactivos</option>
+        </select>
+      </div>
+
       {showForm && (
         <form onSubmit={guardar} className="grid md:grid-cols-2 gap-3 p-4 rounded-xl border border-slate-200 bg-slate-50/50">
           <select className="input-field" value={form.estudiante_id} onChange={e => setForm({ ...form, estudiante_id: e.target.value })}>
@@ -145,10 +192,10 @@ export function BecasTab() {
 
       {loading ? (
         <div className="text-center py-10"><div className="w-8 h-8 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto"></div></div>
-      ) : beneficios.length === 0 ? (
+      ) : beneficiosFiltrados.length === 0 ? (
         <div className="text-center py-12 text-slate-400">
           <GraduationCap size={32} className="mx-auto mb-2" />
-          No hay beneficios asignados.
+          {beneficios.length === 0 ? 'No hay beneficios asignados.' : 'No se encontraron beneficios con los filtros actuales.'}
         </div>
       ) : (
         <table className="w-full text-left text-sm border-collapse">
@@ -163,7 +210,7 @@ export function BecasTab() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {beneficios.map(b => (
+            {beneficiosFiltrados.map(b => (
               <tr key={b.id} className="hover:bg-primary/5 transition-colors">
                 <td className="py-3 px-4 font-semibold text-slate-700">{nombreEstudiante.get(b.estudiante_id) || `Estudiante #${b.estudiante_id}`}</td>
                 <td className="py-3 px-4 text-slate-600">

@@ -284,7 +284,7 @@ export function DashboardLayout({ children, currentView, onNavigate }) {
                     label="Gestión Académica Central"
                   />
                 )}
-                {['superadmin', 'admin', 'secretaria_programa', 'admin_admision'].some(r => userRoles.includes(r)) && (
+                {['superadmin', 'admin', 'secretaria_academica', 'secretaria_programa', 'admin_admision'].some(r => userRoles.includes(r)) && (
                   <NavItem
                     active={currentView === 'students'}
                     onClick={() => onNavigate('students')}

@@ -282,6 +282,7 @@ export function EditStudentModal({ student, onClose, onUpdated }) {
   // El listado ya no trae metadata_admision ni dirección (payload liviano),
   // así que el expediente completo se carga aquí antes de editar.
   const formTocadoRef = useRef(false);
+  const fullMetadataRef = useRef(student?.metadata_admision || {});
 
   const programaOptions = [
     { value: '', label: programasLoading ? 'Cargando carreras…' : 'Seleccione una carrera...' },
@@ -297,8 +298,11 @@ export function EditStudentModal({ student, onClose, onUpdated }) {
     })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (activo && data && !formTocadoRef.current) {
-          setForm(crearFormDesdeEstudiante(data));
+        if (activo && data) {
+          fullMetadataRef.current = data.metadata_admision || {};
+          if (!formTocadoRef.current) {
+            setForm(crearFormDesdeEstudiante(data));
+          }
         }
       })
       .catch(() => { /* se conserva lo que ya había en la fila */ });
@@ -343,7 +347,7 @@ export function EditStudentModal({ student, onClose, onUpdated }) {
     setError(null);
     try {
       const auth = `Bearer ${localStorage.getItem('token')}`;
-      const meta = { ...(student.metadata_admision || {}) };
+      const meta = { ...(fullMetadataRef.current || student.metadata_admision || {}) };
 
       // Empaquetar datos personales actualizados en metadata_admision
       meta.genero = form.genero;
