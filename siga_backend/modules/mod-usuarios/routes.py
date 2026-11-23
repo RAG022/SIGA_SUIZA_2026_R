@@ -299,6 +299,7 @@ async def registrar_personal(personal: PersonalCreate, request: Request, db: Asy
     db.add(event)
     
     await db.commit()
+    await db.refresh(db_perfil)
     
     # Recargar data
     user_result = await db.execute(
@@ -312,7 +313,9 @@ async def registrar_personal(personal: PersonalCreate, request: Request, db: Asy
 @router.put("/personal/{perfil_id}", response_model=PersonalResponse)
 async def actualizar_personal(perfil_id: int, personal: PersonalUpdate, request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
-        select(PerfilPersonal).options(selectinload(PerfilPersonal.usuario)).where(PerfilPersonal.id == perfil_id)
+        select(PerfilPersonal)
+        .options(selectinload(PerfilPersonal.usuario).selectinload(Usuario.roles))
+        .where(PerfilPersonal.id == perfil_id)
     )
     db_perfil = result.scalar_one_or_none()
     if not db_perfil:
@@ -343,7 +346,7 @@ async def actualizar_personal(perfil_id: int, personal: PersonalUpdate, request:
             rol_names = ["docente", "coordinador_programa"]
             
         roles_result = await db.execute(select(Rol).where(Rol.name.in_(rol_names)))
-        db_user.roles = roles_result.scalars().all()
+        db_user.roles = list(roles_result.scalars().all())
 
     # Actualizar campos de Perfil
     for key in ["condicion_laboral", "numero_resolucion", "fecha_fin_contrato", "cargo_funcional", "profesion_titulo", "programa_estudio_id"]:
@@ -363,6 +366,7 @@ async def actualizar_personal(perfil_id: int, personal: PersonalUpdate, request:
     )
     db.add(event)
     await db.commit()
+    await db.refresh(db_perfil)
     
     # Recargar para la respuesta
     final_result = await db.execute(
