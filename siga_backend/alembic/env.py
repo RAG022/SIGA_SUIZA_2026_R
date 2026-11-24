@@ -21,16 +21,20 @@ if not db_url:
     host = os.getenv("DB_HOST", "host.docker.internal")
     port = os.getenv("DB_PORT", "5432")
     dbname = os.getenv("DB_NAME", "siga_core")
-    db_url = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}"
+    # psycopg2 no está instalado en la imagen (se usa psycopg v3).
+    db_url = f"postgresql+psycopg://{user}:{password}@{host}:{port}/{dbname}"
     config.set_main_option("sqlalchemy.url", db_url)
 else:
     config.set_main_option("sqlalchemy.url", db_url)
 
-# Convertir asyncpg a psycopg (sync) para migraciones síncronas
+# Convertir drivers asíncronos a psycopg v3 (sync) para migraciones síncronas
 url = config.get_main_option("sqlalchemy.url")
-if url and "asyncpg" in url:
-    url = url.replace("postgresql+asyncpg://", "postgresql+psycopg://")
-    config.set_main_option("sqlalchemy.url", url)
+if url:
+    for driver in ("postgresql+asyncpg://", "postgresql+psycopg2://"):
+        if url.startswith(driver):
+            url = url.replace(driver, "postgresql+psycopg://", 1)
+            config.set_main_option("sqlalchemy.url", url)
+            break
 
 # Interpretar el archivo de config para logging
 if config.config_file_name is not None:
