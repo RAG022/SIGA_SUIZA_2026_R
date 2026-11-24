@@ -1,9 +1,21 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useAuth } from '../../core/auth/useAuth';
 import { apiClient } from '../../core/api/client';
 import { useToast } from '../../core/ui/ToastContext';
-import { GraduationCap, Calendar, ClipboardList, BookOpen, FileText, Upload, ExternalLink, CheckCircle2, RefreshCw } from 'lucide-react';
+import { GraduationCap, Calendar, ClipboardList, BookOpen, FileText, Upload, ExternalLink, CheckCircle2, RefreshCw, Lock, AlertTriangle } from 'lucide-react';
+
+// Roles con acceso irrestricto al catálogo de programas. El resto (docente,
+// coordinador de programa, secretarías) solo opera sobre su carrera asignada.
+const ROLES_ACCESO_GLOBAL = new Set(['superadmin', 'admin', 'director']);
+
+function normalizarRoles(user) {
+  const roles = Array.isArray(user?.roles) ? user.roles : [];
+  return roles
+    .map((r) => (typeof r === 'string' ? r : r?.name || r?.nombre))
+    .filter(Boolean)
+    .map((r) => r.toLowerCase());
+}
 
 function useSafeToast() {
   try {
@@ -45,9 +57,52 @@ export function DocentePlanning() {
   const [silabos, setSilabos] = useState([]);
   const [_PLANES, setPlanes] = useState([]);
 
+  const rolesUsuario = normalizarRoles(user);
+  const rolPrincipal = String(user?.role || '').toLowerCase();
+  const esAdminGlobal = Boolean(user?.is_superuser)
+    || ROLES_ACCESO_GLOBAL.has(rolPrincipal)
+    || rolesUsuario.some((r) => ROLES_ACCESO_GLOBAL.has(r));
+
+  // Carrera asignada en la ficha del usuario (perfiles_personal.programa_estudio_id).
+  const programaAsignado = !esAdminGlobal && user?.programa_id ? String(user.programa_id) : null;
+
+  // Programas en los que el docente realmente tiene carga lectiva. Sirve de
+  // respaldo cuando la cuenta no tiene una carrera registrada explícitamente.
+  const programasCargaLectiva = useMemo(() => (
+    [...new Set(cargaLectiva.map((c) => String(c.programa_id)).filter(Boolean))]
+  ), [cargaLectiva]);
+
+  const programasVisibles = useMemo(() => {
+    if (esAdminGlobal) return programs;
+    const permitidos = programaAsignado ? [programaAsignado] : programasCargaLectiva;
+    if (permitidos.length === 0) return programs;
+    const enCatalogo = programs.filter((p) => permitidos.includes(String(p.id)));
+    const faltantes = permitidos
+      .filter((id) => !programs.some((p) => String(p.id) === id))
+      .map((id) => ({ id: Number(id), nombre: `Programa ${id}` }));
+    return [...enCatalogo, ...faltantes];
+  }, [esAdminGlobal, programaAsignado, programasCargaLectiva, programs]);
+
+  const programaBloqueado = !esAdminGlobal && (Boolean(programaAsignado) || programasCargaLectiva.length > 0);
+  const programaEfectivo = programaBloqueado
+    ? (programaAsignado || programasCargaLectiva[0] || '')
+    : selectedProgram;
+  const nombrePrograma = programasVisibles.find((p) => String(p.id) === String(programaEfectivo))?.nombre
+    || cargaLectiva.find((c) => String(c.programa_id) === String(programaEfectivo))?.programa_nombre
+    || (programaEfectivo ? `Programa ${programaEfectivo}` : '');
+
   // Fetch initial data
   useEffect(() => {
     const fetchInitial = async () => {
+      // Se calcula dentro del efecto para que la dependencia sea el id del
+      // usuario y no la identidad del objeto (evita bucles de renderizado).
+      const roles = normalizarRoles(user);
+      const rol = String(user?.role || '').toLowerCase();
+      const admin = Boolean(user?.is_superuser)
+        || ROLES_ACCESO_GLOBAL.has(rol)
+        || roles.some((r) => ROLES_ACCESO_GLOBAL.has(r));
+      const asignado = !admin && user?.programa_id ? String(user.programa_id) : null;
+
       try {
         const [progRes, perRes, loadRes] = await Promise.all([
           apiClient.request('/api/mod-programas-estudio/programas').catch(() => []),
@@ -58,14 +113,22 @@ export function DocentePlanning() {
         setPeriods(perRes || []);
         setCargaLectiva(loadRes || []);
 
+        const programasConCarga = [...new Set((loadRes || []).map((c) => String(c.programa_id)).filter(Boolean))];
+
         let initProg = '';
         let initPer = '';
-        if (loadRes && loadRes.length > 0) {
+        if (asignado) {
+          initProg = asignado;
+        } else if (!admin && programasConCarga.length > 0) {
+          initProg = programasConCarga[0];
+        } else if (loadRes && loadRes.length > 0) {
           initProg = loadRes[0].programa_id.toString();
-          initPer = loadRes[0].periodo_id.toString();
         }
         if (!initProg && progRes && progRes.length > 0) {
           initProg = progRes[0].id.toString();
+        }
+        if (loadRes && loadRes.length > 0 && loadRes[0].periodo_id) {
+          initPer = loadRes[0].periodo_id.toString();
         }
         if (!initPer && perRes && perRes.length > 0) {
           const active = perRes.find(p => p.estado === 'matricula_abierta' || p.estado === 'abierto' || p.estado === 'ACTIVO');
@@ -77,20 +140,21 @@ export function DocentePlanning() {
         console.error('Error fetching initial data', e);
       }
     };
-    if (user) {
+    if (user?.id) {
       fetchInitial();
     }
-  }, [user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // Fetch malla when program changes (to get unidad names)
   useEffect(() => {
-    if (!selectedProgram) {
+    if (!programaEfectivo) {
       setMallaFlat([]);
       return;
     }
     const fetchMalla = async () => {
       try {
-        const res = await apiClient.request(`/api/mod-programas-estudio/programas/${selectedProgram}/malla`);
+        const res = await apiClient.request(`/api/mod-programas-estudio/programas/${programaEfectivo}/malla`);
         const flat = [];
         (res || []).forEach(modulo => {
           (modulo.unidades || []).forEach(ud => {
@@ -103,11 +167,11 @@ export function DocentePlanning() {
       }
     };
     fetchMalla();
-  }, [selectedProgram]);
+  }, [programaEfectivo]);
 
   // Fetch Silabos and Planes when Period changes
   useEffect(() => {
-    if (!selectedProgram || !selectedPeriod || !user?.id) return;
+    if (!programaEfectivo || !selectedPeriod || !user?.id) return;
 
     const fetchData = async () => {
       setLoading(true);
@@ -118,8 +182,10 @@ export function DocentePlanning() {
         const silabosRes = await apiClient.request(`/api/mod-programas-estudio/docente/${user.id}/silabos`).catch(() => []);
 
         setPlanes(planesRes || []);
-        const plan = (planesRes || []).find(p => String(p.programa_id) === String(selectedProgram)) || (planesRes && planesRes.length > 0 ? planesRes[0] : null);
-        setPlanActual(plan || null);
+        const plan = (planesRes || []).find(p => String(p.programa_id) === String(programaEfectivo))
+          || (planesRes || []).find(p => p.programa_id == null)
+          || null;
+        setPlanActual(plan);
         setSilabos(silabosRes || []);
       } catch (e) {
         console.error('Error fetching planning data', e);
@@ -127,7 +193,7 @@ export function DocentePlanning() {
       setLoading(false);
     };
     fetchData();
-  }, [selectedProgram, selectedPeriod, user?.id]);
+  }, [programaEfectivo, selectedPeriod, user?.id]);
 
   const fileInputRefSilabo = useRef(null);
   const fileInputRefPlan = useRef(null);
@@ -186,7 +252,7 @@ export function DocentePlanning() {
   };
 
   const triggerUploadPlan = () => {
-    if (!selectedPeriod || !selectedProgram) {
+    if (!selectedPeriod || !programaEfectivo) {
       toast.warning("Por favor seleccione un programa y periodo académico antes de enviar el Plan de Trabajo.");
       return;
     }
@@ -206,7 +272,7 @@ export function DocentePlanning() {
     }
     if (!target || target.type !== 'plan') return;
 
-    if (!selectedPeriod || !selectedProgram) {
+    if (!selectedPeriod || !programaEfectivo) {
       toast.warning("Por favor seleccione un programa y periodo académico antes de enviar el Plan de Trabajo.");
       return;
     }
@@ -221,7 +287,7 @@ export function DocentePlanning() {
     try {
       const payload = {
         periodo_id: parseInt(selectedPeriod, 10),
-        programa_id: parseInt(selectedProgram, 10),
+        programa_id: parseInt(programaEfectivo, 10),
         docente_id: parseInt(user.id, 10),
         estado: "presentado",
         archivo_url: simulatedUrl
@@ -236,8 +302,10 @@ export function DocentePlanning() {
       const planesRes = await apiClient.request(`/api/mod-programas-estudio/docente/${user.id}/planes-trabajo?periodo_id=${selectedPeriod}`).catch(() => []);
       if (planesRes) {
         setPlanes(planesRes);
-        const plan = planesRes.find(p => String(p.programa_id) === String(selectedProgram)) || (planesRes.length > 0 ? planesRes[0] : null);
-        setPlanActual(plan || null);
+        const plan = planesRes.find(p => String(p.programa_id) === String(programaEfectivo))
+          || planesRes.find(p => p.programa_id == null)
+          || null;
+        setPlanActual(plan);
       }
     } catch (err) {
       toast.error(err.message || "Error al enviar el Plan de Trabajo");
@@ -258,7 +326,7 @@ export function DocentePlanning() {
   // Filtrar carga lectiva del periodo activo y programa
   const cargaActiva = cargaLectiva.filter(c => 
     (!selectedPeriod || String(c.periodo_id) === String(selectedPeriod)) &&
-    (!selectedProgram || String(c.programa_id) === String(selectedProgram))
+    (!programaEfectivo || String(c.programa_id) === String(programaEfectivo))
   );
 
   return (
@@ -271,16 +339,33 @@ export function DocentePlanning() {
           </div>
           <div className="flex-1">
             <p className="text-[10px] uppercase font-extrabold text-slate-400 tracking-wider mb-1">Programa de Estudios</p>
-            <select
-              className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-primary"
-              value={selectedProgram}
-              onChange={(e) => setSelectedProgram(e.target.value)}
-            >
-              <option value="">-- Seleccione Programa --</option>
-              {programs.map((p) => (
-                <option key={p.id} value={p.id}>{p.nombre}</option>
-              ))}
-            </select>
+            {programaBloqueado ? (
+              <div
+                className="w-full flex items-center gap-2 px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs font-bold text-slate-800"
+                title="La carrera está asignada a su cuenta y no puede modificarla."
+              >
+                <Lock size={12} className="text-slate-500 shrink-0" />
+                <span className="truncate">{nombrePrograma || 'Carrera asignada'}</span>
+                <span className="ml-auto shrink-0 text-[9px] font-black uppercase tracking-wider text-slate-500">Asignada</span>
+              </div>
+            ) : (
+              <select
+                className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-primary"
+                value={selectedProgram}
+                onChange={(e) => setSelectedProgram(e.target.value)}
+              >
+                <option value="">-- Seleccione Programa --</option>
+                {programasVisibles.map((p) => (
+                  <option key={p.id} value={p.id}>{p.nombre}</option>
+                ))}
+              </select>
+            )}
+            {!esAdminGlobal && !programaAsignado && programasCargaLectiva.length === 0 && (
+              <p className="mt-1 flex items-start gap-1 text-[10px] font-semibold text-amber-700">
+                <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                <span>Su cuenta no tiene una carrera asignada. Contacte al administrador.</span>
+              </p>
+            )}
           </div>
         </div>
         <div className="flex items-center space-x-3">

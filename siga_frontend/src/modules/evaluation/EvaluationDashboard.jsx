@@ -1,10 +1,10 @@
 /* eslint-disable react-hooks/set-state-in-effect */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { apiClient } from '../../core/api/client';
 import { useToast } from '../../core/ui/ToastContext';
 import { DocentePlanning } from '../academic/DocentePlanning';
 import { useAuth } from '../../core/auth/useAuth';
-import { Save, GraduationCap, Calendar, BookOpen, ClipboardList, AlertTriangle, Target, FileText, Printer, X, CheckCircle2 } from 'lucide-react';
+import { Save, GraduationCap, Calendar, BookOpen, ClipboardList, AlertTriangle, Target, FileText, Printer, X, CheckCircle2, Lock } from 'lucide-react';
 
 /**
  * Formatea una fecha a formato institucional DD/MM/AAAA.
@@ -138,8 +138,16 @@ function useSafeToast() {
 
 export function EvaluationDashboard() {
   const { user } = useAuth();
-  const userRole = user?.role || (Array.isArray(user?.roles) ? user.roles[0]?.name || user.roles[0] : '');
-  const isAdmin = Boolean(user?.is_superuser || userRole === 'admin' || userRole === 'superadmin');
+  const rolesUsuario = (Array.isArray(user?.roles) ? user.roles : [])
+    .map((r) => (typeof r === 'string' ? r : r?.name || r?.nombre))
+    .filter(Boolean)
+    .map((r) => r.toLowerCase());
+  const userRole = String(user?.role || '').toLowerCase();
+  const isAdmin = Boolean(user?.is_superuser)
+    || ['admin', 'superadmin', 'director'].includes(userRole)
+    || rolesUsuario.some((r) => ['admin', 'superadmin', 'director'].includes(r));
+  // Un docente/coordinador solo puede operar sobre la carrera de su ficha.
+  const programaAsignado = !isAdmin && user?.programa_id ? String(user.programa_id) : null;
   const { toast } = useSafeToast();
 
   const [activeTab, setActiveTab] = useState('notas'); // 'notas', 'planificacion'
@@ -162,6 +170,13 @@ export function EvaluationDashboard() {
 
   const [students, setStudents] = useState([]);
 
+  const programsVisibles = useMemo(() => {
+    if (!programaAsignado) return programs;
+    const enCatalogo = programs.filter((p) => String(p.id) === programaAsignado);
+    if (enCatalogo.length > 0) return enCatalogo;
+    return [{ id: Number(programaAsignado), nombre: `Programa ${programaAsignado}` }];
+  }, [programs, programaAsignado]);
+
   // Cargar Programas, Periodos y Carga del Docente al iniciar
   useEffect(() => {
     const fetchInitialData = async () => {
@@ -175,26 +190,31 @@ export function EvaluationDashboard() {
         setPeriods(perRes || []);
         setTeacherLoad(loadRes || []);
 
-        if (loadRes && loadRes.length > 0) {
+        let initPeriod = '';
+        if (programaAsignado) {
+          setSelectedProgram(programaAsignado);
+          const cargaAsignada = (loadRes || []).find((c) => String(c.programa_id) === programaAsignado);
+          if (cargaAsignada) initPeriod = cargaAsignada.periodo_id.toString();
+        } else if (loadRes && loadRes.length > 0) {
           setSelectedProgram(loadRes[0].programa_id.toString());
-          setSelectedPeriod(loadRes[0].periodo_id.toString());
-        } else {
-          if (progRes && progRes.length > 0) {
-            setSelectedProgram(progRes[0].id.toString());
-          }
-          if (perRes && perRes.length > 0) {
-            const active = perRes.find(p => ['ACTIVO', 'activo', 'matricula_abierta', 'en_curso'].includes(p.estado)) || perRes[perRes.length - 1];
-            setSelectedPeriod(active.id.toString());
-          }
+          initPeriod = loadRes[0].periodo_id.toString();
+        } else if (progRes && progRes.length > 0) {
+          setSelectedProgram(progRes[0].id.toString());
         }
+        if (!initPeriod && perRes && perRes.length > 0) {
+          const active = perRes.find(p => ['ACTIVO', 'activo', 'matricula_abierta', 'en_curso'].includes(p.estado)) || perRes[perRes.length - 1];
+          initPeriod = active.id.toString();
+        }
+        if (initPeriod) setSelectedPeriod(initPeriod);
       } catch (e) {
         console.error('Error fetching initial data', e);
       }
     };
-    if (user) {
+    if (user?.id) {
       fetchInitialData();
     }
-  }, [user]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
 
   // Cargar Malla cuando se selecciona un Programa
   useEffect(() => {
@@ -489,19 +509,20 @@ export function EvaluationDashboard() {
                 </div>
                 <div>
                   <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Programa Seleccionado</span>
-                  {isAdmin && programs.length > 0 ? (
+                  {isAdmin && programsVisibles.length > 0 ? (
                     <select
                       className="bg-transparent font-bold text-slate-900 border-none p-0 focus:ring-0 cursor-pointer text-xs"
                       value={selectedProgram}
                       onChange={(e) => setSelectedProgram(e.target.value)}
                     >
-                      {programs.map(p => (
+                      {programsVisibles.map(p => (
                         <option key={p.id} value={p.id.toString()}>{p.nombre}</option>
                       ))}
                     </select>
                   ) : (
-                    <span className="text-xs font-bold text-slate-900">
-                      {programs.find(p => p.id.toString() === selectedProgram)?.nombre || 'Seleccione un programa'}
+                    <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5" title="La carrera está asignada a su cuenta y no puede modificarla.">
+                      {programaAsignado && <Lock size={12} className="text-slate-400 shrink-0" />}
+                      {programsVisibles.find(p => p.id.toString() === selectedProgram)?.nombre || 'Seleccione un programa'}
                     </span>
                   )}
                 </div>
