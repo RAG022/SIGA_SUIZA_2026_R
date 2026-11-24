@@ -1,0 +1,42 @@
+# Git
+.git
+.gitignore
+
+# Dependencies
+node_modules
+npm-debug.log
+yarn-error.log
+dist
+build
+__pycache__
+
+# Environment
+.env
+.env.*
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs
+*.md
+
+# Testing
+.pytest_cache
+coverage.xml
+*.lcov
+
+# Debugging
+*.pyc
+__pycache__
+
+# Alembic migrations (no version control for debugging)
+siga_backend/alembic/versions/*.bak

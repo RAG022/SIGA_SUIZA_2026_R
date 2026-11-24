@@ -520,9 +520,9 @@ export function EvaluationDashboard() {
                       ))}
                     </select>
                   ) : (
-                    <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5" title="La carrera está asignada a su cuenta y no puede modificarla.">
+                    <span className={`text-xs font-bold flex items-center gap-1.5 ${!programaAsignado ? 'text-amber-700' : 'text-slate-900'}`} title="La carrera está asignada a su cuenta y no puede modificarla.">
                       {programaAsignado && <Lock size={12} className="text-slate-400 shrink-0" />}
-                      {programsVisibles.find(p => p.id.toString() === selectedProgram)?.nombre || 'Seleccione un programa'}
+                      {programsVisibles.find(p => p.id.toString() === selectedProgram)?.nombre || (!programaAsignado ? 'Sin carrera asignada' : 'Seleccione un programa')}
                     </span>
                   )}
                 </div>

@@ -84,8 +84,8 @@ export function DocentePlanning() {
   }, [esAdminGlobal, programaAsignado, programasCargaLectiva, programs]);
 
   const programaBloqueado = !esAdminGlobal;
-  const programaEfectivo = programaBloqueado
-    ? (programaAsignado || programasCargaLectiva[0] || '')
+  const programaEfectivo = !esAdminGlobal
+    ? (programaAsignado || (programasCargaLectiva.length > 0 ? programasCargaLectiva[0] : ''))
     : selectedProgram;
   const nombrePrograma = programasVisibles.find((p) => String(p.id) === String(programaEfectivo))?.nombre
     || cargaLectiva.find((c) => String(c.programa_id) === String(programaEfectivo))?.programa_nombre
@@ -124,9 +124,9 @@ export function DocentePlanning() {
         } else if (loadRes && loadRes.length > 0) {
           initProg = loadRes[0].programa_id.toString();
         }
-        if (!initProg && progRes && progRes.length > 0) {
-          initProg = progRes[0].id.toString();
-        }
+        // Si no hay asignado y no hay carga, el usuario no tiene carrera y el selector debe
+        // quedar vacío (bloqueado) hasta que el admin lo configure.
+        if (initProg) setSelectedProgram(initProg);
         if (loadRes && loadRes.length > 0 && loadRes[0].periodo_id) {
           initPer = loadRes[0].periodo_id.toString();
         }
@@ -350,13 +350,17 @@ export function DocentePlanning() {
               </div>
             ) : (
               <select
-                className="w-full px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800 focus:outline-none focus:ring-1 focus:ring-primary"
-                value={selectedProgram}
-                onChange={(e) => setSelectedProgram(e.target.value)}
+                disabled
+                className="w-full px-3 py-1.5 bg-slate-100 border border-slate-200 rounded-lg text-xs font-bold text-slate-500 cursor-not-allowed"
+                value={programaAsignado || ''}
               >
-                <option value="">-- Seleccione Programa --</option>
+                <option value="">
+                  {!esAdminGlobal ? 'Cargando...' : '-- Seleccione Programa --'}
+                </option>
                 {programasVisibles.map((p) => (
-                  <option key={p.id} value={p.id}>{p.nombre}</option>
+                  <option key={p.id} value={p.id} disabled>
+                    {p.nombre}
+                  </option>
                 ))}
               </select>
             )}
@@ -424,10 +428,10 @@ export function DocentePlanning() {
                     </div>
                   )}
                   {planActual.estado !== 'aprobado' && (
-                    <button 
+                    <button
                       onClick={triggerUploadPlan}
-                      disabled={!programaEfectivo || !selectedPeriod}
-                      title={!programaEfectivo ? 'Su cuenta no tiene una carrera asignada' : 'Actualizar el plan de trabajo'}
+                      disabled={!programaEfectivo || !selectedPeriod || programaBloqueado}
+                      title={!programaEfectivo || programaBloqueado ? 'Su cuenta no tiene una carrera asignada' : 'Actualizar el plan de trabajo'}
                       className="w-full mt-4 px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Actualizar Documento
@@ -438,10 +442,10 @@ export function DocentePlanning() {
                 <div className="text-center p-6 bg-slate-50/50 rounded-xl border border-slate-100 border-dashed">
                   <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-3 text-primary"><FileText className="w-6 h-6" /></div>
                   <p className="text-sm text-slate-500 mb-4">Aún no has presentado tu plan de trabajo para este periodo.</p>
-                  <button 
+                  <button
                     onClick={triggerUploadPlan}
-                    disabled={!programaEfectivo || !selectedPeriod}
-                    title={!programaEfectivo ? 'Su cuenta no tiene una carrera asignada' : 'Subir el plan de trabajo'}
+                    disabled={!programaEfectivo || !selectedPeriod || programaBloqueado}
+                    title={!programaEfectivo || programaBloqueado ? 'Su cuenta no tiene una carrera asignada' : 'Subir el plan de trabajo'}
                     className="btn-primary w-full py-2 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Upload className="w-4 h-4 mr-1 inline" /> Subir Plan de Trabajo
