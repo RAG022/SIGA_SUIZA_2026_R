@@ -47,7 +47,7 @@ describe('DocentePlanning - restricción por carrera asignada', () => {
     render(<DocentePlanning />);
 
     await waitFor(() => {
-      expect(screen.getByText('DESARROLLO DE SISTEMAS DE INFORMACION')).toBeInTheDocument();
+      expect(screen.getAllByText('DESARROLLO DE SISTEMAS DE INFORMACION').length).toBeGreaterThan(0);
     });
 
     expect(screen.getByText('Asignada')).toBeInTheDocument();

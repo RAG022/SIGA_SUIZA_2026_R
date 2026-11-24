@@ -83,7 +83,7 @@ export function DocentePlanning() {
     return [...enCatalogo, ...faltantes];
   }, [esAdminGlobal, programaAsignado, programasCargaLectiva, programs]);
 
-  const programaBloqueado = !esAdminGlobal && (Boolean(programaAsignado) || programasCargaLectiva.length > 0);
+  const programaBloqueado = !esAdminGlobal;
   const programaEfectivo = programaBloqueado
     ? (programaAsignado || programasCargaLectiva[0] || '')
     : selectedProgram;
@@ -345,7 +345,7 @@ export function DocentePlanning() {
                 title="La carrera está asignada a su cuenta y no puede modificarla."
               >
                 <Lock size={12} className="text-slate-500 shrink-0" />
-                <span className="truncate">{nombrePrograma || 'Carrera asignada'}</span>
+                <span className="truncate">{nombrePrograma || 'Sin carrera asignada'}</span>
                 <span className="ml-auto shrink-0 text-[9px] font-black uppercase tracking-wider text-slate-500">Asignada</span>
               </div>
             ) : (
@@ -398,7 +398,7 @@ export function DocentePlanning() {
                 </div>
                 <div>
                   <h3 className="text-lg font-bold text-slate-text">Plan de Trabajo</h3>
-                  <p className="text-xs text-slate-500">Documento global del periodo</p>
+                  <p className="text-xs text-slate-500 truncate" title={nombrePrograma}>{nombrePrograma || 'Documento global del periodo'}</p>
                 </div>
               </div>
 
@@ -426,7 +426,9 @@ export function DocentePlanning() {
                   {planActual.estado !== 'aprobado' && (
                     <button 
                       onClick={triggerUploadPlan}
-                      className="w-full mt-4 px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors"
+                      disabled={!programaEfectivo || !selectedPeriod}
+                      title={!programaEfectivo ? 'Su cuenta no tiene una carrera asignada' : 'Actualizar el plan de trabajo'}
+                      className="w-full mt-4 px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Actualizar Documento
                     </button>
@@ -438,7 +440,9 @@ export function DocentePlanning() {
                   <p className="text-sm text-slate-500 mb-4">Aún no has presentado tu plan de trabajo para este periodo.</p>
                   <button 
                     onClick={triggerUploadPlan}
-                    className="btn-primary w-full py-2 rounded-lg text-sm"
+                    disabled={!programaEfectivo || !selectedPeriod}
+                    title={!programaEfectivo ? 'Su cuenta no tiene una carrera asignada' : 'Subir el plan de trabajo'}
+                    className="btn-primary w-full py-2 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Upload className="w-4 h-4 mr-1 inline" /> Subir Plan de Trabajo
                   </button>
