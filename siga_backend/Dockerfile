@@ -24,8 +24,8 @@ ENV PYTHONUNBUFFERED=1 \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY entrypoint.sh .
-RUN chmod +x entrypoint.sh
+COPY entrypoint.sh start_railway.sh alembic.ini ./
+RUN chmod +x entrypoint.sh start_railway.sh
 
 # Production image: CPICE only required modules
 COPY modules/mod-usuarios ./modules/mod-usuarios
@@ -36,6 +36,7 @@ COPY modules/mod-auditoria ./modules/mod-auditoria
 COPY modules/mod-evaluacion ./modules/mod-evaluacion
 COPY modules/mod-admision ./modules/mod-admision
 COPY app ./app
+COPY shared ./shared
 COPY alembic ./alembic
 
 RUN rm -rf tests

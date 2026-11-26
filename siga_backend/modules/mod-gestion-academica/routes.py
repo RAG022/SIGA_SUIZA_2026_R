@@ -12,6 +12,7 @@ from typing import List, Optional
 from pathlib import Path
 import uuid
 from shared.identity import (
+    es_solo_estudiante,
     get_identity,
     resolver_filtro_programa_estudiantes,
     verificar_acceso_estudiante,
@@ -34,7 +35,7 @@ async def _obtener_estudiante_autorizado(
     est = (await db.execute(stmt)).scalar_one_or_none()
     if not est:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, est.programa_id)
+    verificar_acceso_estudiante(ident, est.programa_id, est.id)
     return est
 
 FOTO_DIR = Path(__file__).resolve().parent / "uploads" / "fotos"
@@ -325,9 +326,13 @@ async def obtener_estudiantes(
     db: AsyncSession = Depends(get_db),
 ):
     ident = await get_identity(request, db)
-    programa_efectivo = resolver_filtro_programa_estudiantes(ident, programa_id)
+    solo_estudiante = es_solo_estudiante(ident)
+    programa_efectivo = None if solo_estudiante else resolver_filtro_programa_estudiantes(ident, programa_id)
     try:
         query = select(Estudiante).order_by(Estudiante.apellidos)
+        if solo_estudiante:
+            # El estudiante solo ve su propia ficha.
+            query = query.where(Estudiante.id == (ident.estudiante_id or -1))
         if programa_efectivo is not None:
             query = query.where(Estudiante.programa_id == programa_efectivo)
         if search and search.strip():
@@ -382,6 +387,14 @@ async def obtener_estudiantes(
 async def obtener_siguiente_codigo(db: AsyncSession = Depends(get_db)):
     """Devuelve el siguiente código de estudiante único del año actual (formato AAAA-000000)."""
     return {"codigo_estudiante": await _siguiente_codigo_estudiante(db)}
+
+@router.get("/estudiantes/me", response_model=EstudianteResponse)
+async def obtener_mi_ficha(request: Request, db: AsyncSession = Depends(get_db)):
+    """Ficha del estudiante autenticado (vinculada por correo institucional)."""
+    ident = await get_identity(request, db)
+    if ident.estudiante_id is None:
+        raise HTTPException(status_code=404, detail="Su usuario no está vinculado a una ficha de estudiante.")
+    return await _obtener_estudiante_autorizado(request, db, ident.estudiante_id)
 
 @router.put("/estudiantes/{estudiante_id}/pago_matricula", response_model=EstudianteResponse)
 async def actualizar_pago_matricula(estudiante_id: int, request: Request, pagado: bool = True, db: AsyncSession = Depends(get_db)):
@@ -761,7 +774,7 @@ async def actualizar_estudiante(estudiante_id: int, data: EstudianteUpdate, requ
     db_estudiante = result.scalar_one_or_none()
     if not db_estudiante:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, db_estudiante.programa_id)
+    verificar_acceso_estudiante(ident, db_estudiante.programa_id, db_estudiante.id)
 
     update_data = data.model_dump(exclude_unset=True)
 
@@ -921,7 +934,27 @@ async def obtener_matriculas_estudiante(estudiante_id: int, request: Request, db
     return result.scalars().all()
 
 @router.get("/matriculas/unidad/{unidad_id}/periodo/{periodo_id}")
-async def obtener_estudiantes_por_unidad(unidad_id: int, periodo_id: int, db: AsyncSession = Depends(get_db)):
+async def obtener_estudiantes_por_unidad_endpoint(unidad_id: int, periodo_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    """Nomina de una unidad: solo el docente asignado, personal de la carrera de la unidad o roles globales."""
+    ident = await get_identity(request, db)
+    if es_solo_estudiante(ident):
+        raise HTTPException(status_code=403, detail="No tiene permisos para esta operación.")
+    roles_globales = {"superadmin", "admin", "director", "secretaria_academica", "caja_tesoreria", "tesoreria", "oficina_admision", "admin_admision"}
+    if not (ident.is_superuser or any(r in roles_globales for r in ident.roles)):
+        es_docente = (await db.execute(
+            text("SELECT 1 FROM carga_lectiva WHERE unidad_didactica_id = :u AND periodo_id = :p AND docente_id = :d LIMIT 1"),
+            {"u": unidad_id, "p": periodo_id, "d": ident.user_id},
+        )).fetchone()
+        prog_unidad = (await db.execute(
+            text("SELECT m.programa_id FROM programa_unidades u JOIN programa_modulos m ON u.programa_modulo_id = m.id WHERE u.id = :u"),
+            {"u": unidad_id},
+        )).scalar_one_or_none()
+        misma_carrera = ident.programa_id is not None and prog_unidad is not None and int(ident.programa_id) == int(prog_unidad)
+        if not (es_docente or misma_carrera):
+            raise HTTPException(status_code=403, detail="No tiene permisos para ver la nómina de esta unidad.")
+    return await obtener_estudiantes_por_unidad(unidad_id, periodo_id, db)
+
+async def obtener_estudiantes_por_unidad(unidad_id: int, periodo_id: int, db: AsyncSession):
     query = (
         select(Estudiante, MatriculaDetalle.id.label("matricula_detalle_id"))
         .join(Matricula, Matricula.estudiante_id == Estudiante.id)
@@ -1017,7 +1050,7 @@ async def anular_matricula(matricula_id: int, request: Request, db: AsyncSession
     db_matricula = result.scalar_one_or_none()
     if not db_matricula:
         raise HTTPException(status_code=404, detail="Matrícula no encontrada")
-    verificar_acceso_estudiante(ident, db_matricula.programa_id)
+    verificar_acceso_estudiante(ident, db_matricula.programa_id, db_matricula.estudiante_id)
 
     db_matricula.estado_matricula = "anulada"
     

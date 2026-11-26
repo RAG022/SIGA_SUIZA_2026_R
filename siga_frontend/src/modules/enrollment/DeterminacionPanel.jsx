@@ -35,8 +35,8 @@ export function DeterminacionPanel() {
         ]);
         setStudents(Array.isArray(est) ? est : []);
         const progsRaw = Array.isArray(prog) ? prog : [];
-        const progs = programaRestringido ? progsRaw.filter(item => String(item.id) === programaRestringido) : progsRaw;
         const pers = Array.isArray(per) ? per : [];
+        const progs = programaRestringido ? progsRaw.filter(item => String(item.id) === programaRestringido) : progsRaw;
         setPrograms(progs);
         setPeriods(pers);
         if (programaRestringido) setProgramaId(programaRestringido);

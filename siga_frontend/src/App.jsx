@@ -42,7 +42,8 @@ function AppContent() {
     if (userRoles.includes('estudiante')) return 'report_card';
     if (userRoles.includes('secretaria_academica')) return 'students';
     if (userRoles.includes('secretaria_programa')) return 'enrollment';
-    if (userRoles.includes('caja_tesoreria')) return 'finanzas';
+    if (userRoles.includes('caja_tesoreria') || userRoles.includes('tesoreria')) return 'finanzas';
+    if (userRoles.includes('oficina_admision') || userRoles.includes('admin_admision')) return 'students';
     if (userRoles.includes('director')) return 'academic';
     return 'dashboard';
   };

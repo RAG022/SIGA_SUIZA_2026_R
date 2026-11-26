@@ -430,8 +430,8 @@ export function DocentePlanning() {
                   {planActual.estado !== 'aprobado' && (
                     <button
                       onClick={triggerUploadPlan}
-                      disabled={!programaEfectivo || !selectedPeriod || programaBloqueado}
-                      title={!programaEfectivo || programaBloqueado ? 'Su cuenta no tiene una carrera asignada' : 'Actualizar el plan de trabajo'}
+                      disabled={!programaEfectivo || !selectedPeriod}
+                      title={!programaEfectivo ? 'Su cuenta no tiene una carrera asignada' : 'Actualizar el plan de trabajo'}
                       className="w-full mt-4 px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Actualizar Documento
@@ -444,8 +444,8 @@ export function DocentePlanning() {
                   <p className="text-sm text-slate-500 mb-4">Aún no has presentado tu plan de trabajo para este periodo.</p>
                   <button
                     onClick={triggerUploadPlan}
-                    disabled={!programaEfectivo || !selectedPeriod || programaBloqueado}
-                    title={!programaEfectivo || programaBloqueado ? 'Su cuenta no tiene una carrera asignada' : 'Subir el plan de trabajo'}
+                    disabled={!programaEfectivo || !selectedPeriod}
+                    title={!programaEfectivo ? 'Su cuenta no tiene una carrera asignada' : 'Subir el plan de trabajo'}
                     className="btn-primary w-full py-2 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <Upload className="w-4 h-4 mr-1 inline" /> Subir Plan de Trabajo

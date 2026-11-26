@@ -363,5 +363,5 @@ async def test_listado_matriculas_unidad_con_estado_academico_null_responde_200(
     """))
     await db_session.commit()
 
-    resp = await client_gestion.get("/matriculas/unidad/101/periodo/1")
+    resp = await client_gestion.get("/matriculas/unidad/101/periodo/1", headers=auth_headers(user_id=1))
     assert resp.status_code == 200, f"Error detectado en matriculas por unidad con NULL: {resp.text}"

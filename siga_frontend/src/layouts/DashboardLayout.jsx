@@ -284,7 +284,7 @@ export function DashboardLayout({ children, currentView, onNavigate }) {
                     label="Gestión Académica Central"
                   />
                 )}
-                {['superadmin', 'admin', 'secretaria_academica', 'secretaria_programa', 'admin_admision'].some(r => userRoles.includes(r)) && (
+                {['superadmin', 'admin', 'secretaria_academica', 'secretaria_programa', 'admin_admision', 'oficina_admision'].some(r => userRoles.includes(r)) && (
                   <NavItem
                     active={currentView === 'students'}
                     onClick={() => onNavigate('students')}
@@ -340,7 +340,7 @@ export function DashboardLayout({ children, currentView, onNavigate }) {
                     label="Boletín de Notas"
                   />
                 )}
-                {['caja_tesoreria', 'superadmin', 'admin'].some(r => userRoles.includes(r)) && (
+                {['caja_tesoreria', 'tesoreria', 'superadmin', 'admin'].some(r => userRoles.includes(r)) && (
                   <NavItem
                     active={currentView === 'finanzas'}
                     onClick={() => onNavigate('finanzas')}

@@ -636,8 +636,18 @@ async def crear_carga_lectiva(programa_id: int, carga: CargaLectivaCreate, reque
     await db.refresh(db_carga)
     return db_carga
 
+async def _exigir_acceso_programa(request: Request, db: AsyncSession, programa_id: int) -> Identity:
+    """Lectura de datos de un programa: solo personal de esa carrera o roles globales."""
+    ident = await get_identity(request, db)
+    if es_superadmin(ident) or any(r in ("admin", "director", "secretaria_academica") for r in ident.roles):
+        return ident
+    if ident.programa_id is not None and int(ident.programa_id) == int(programa_id):
+        return ident
+    raise HTTPException(status_code=403, detail="No tiene permisos para ver información de otra carrera.")
+
 @router.get("/programas/{programa_id}/carga-lectiva", response_model=List[CargaLectivaResponse])
-async def listar_carga_lectiva(programa_id: int, periodo_id: int, db: AsyncSession = Depends(get_db)):
+async def listar_carga_lectiva(programa_id: int, periodo_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_acceso_programa(request, db, programa_id)
     result = await db.execute(
         select(CargaLectiva)
         .where(CargaLectiva.programa_id == programa_id, CargaLectiva.periodo_id == periodo_id)
@@ -771,7 +781,8 @@ async def crear_horario(programa_id: int, horario: HorarioPeriodoCreate, request
     return db_horario
 
 @router.get("/programas/{programa_id}/horarios", response_model=List[HorarioPeriodoResponse])
-async def listar_horarios(programa_id: int, periodo_id: int, db: AsyncSession = Depends(get_db)):
+async def listar_horarios(programa_id: int, periodo_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_acceso_programa(request, db, programa_id)
     result = await db.execute(
         select(HorarioPeriodo)
         .where(HorarioPeriodo.programa_id == programa_id, HorarioPeriodo.periodo_id == periodo_id)
@@ -1525,7 +1536,8 @@ async def crear_tutoria(programa_id: int, tutoria: TutoriaCreate, request: Reque
     return db_tutoria
 
 @router.get("/programas/{programa_id}/tutorias", response_model=List[TutoriaResponse])
-async def listar_tutorias(programa_id: int, periodo_id: int, db: AsyncSession = Depends(get_db)):
+async def listar_tutorias(programa_id: int, periodo_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_acceso_programa(request, db, programa_id)
     result = await db.execute(
         select(Tutoria)
         .where(Tutoria.programa_id == programa_id, Tutoria.periodo_id == periodo_id)

@@ -1,5 +1,10 @@
 from fastapi import FastAPI
 import os
+import sys
+
+_app_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _app_root not in sys.path:
+    sys.path.insert(0, _app_root)
 from routes import router
 from database import init_db
 import asyncio

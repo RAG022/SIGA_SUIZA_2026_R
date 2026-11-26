@@ -89,7 +89,7 @@ export function UserManagement() {
       loadData();
     } catch (error) {
       console.error('Error saving user:', error);
-      toast.error('Error guardando usuario. Verifica la consola para más detalles.');
+      toast.error(error?.message && !error.message.startsWith('HTTP error') ? error.message : 'Error guardando usuario. Verifica los datos e intenta de nuevo.');
     }
   };
 

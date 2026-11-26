@@ -434,7 +434,32 @@ export function StudentReportCard() {
     });
   };
 
-  const effectiveStudentId = isAdmin ? selectedStudentId : user?.id;
+  // El estudiante no se identifica por su id de usuario: se resuelve su ficha
+  // (vinculada por correo institucional) desde el backend.
+  const [miEstudianteId, setMiEstudianteId] = useState(null);
+  useEffect(() => {
+    if (isAdmin) return;
+    let activo = true;
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/mod-gestion-academica/estudiantes/me`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (res.ok) {
+          const ficha = await res.json();
+          if (activo) setMiEstudianteId(ficha.id);
+        } else if (activo) {
+          setError('Su usuario no está vinculado a una ficha de estudiante. Contacte a secretaría.');
+          setLoading(false);
+        }
+      } catch {
+        if (activo) { setError('No se pudo cargar su ficha de estudiante.'); setLoading(false); }
+      }
+    })();
+    return () => { activo = false; };
+  }, [isAdmin]);
+
+  const effectiveStudentId = isAdmin ? selectedStudentId : miEstudianteId;
 
   useEffect(() => {
     if (!effectiveStudentId) {
@@ -458,31 +483,8 @@ export function StudentReportCard() {
           console.warn('API /boletin no disponible o error:', err);
         }
 
-        const notasJson = obtenerNotasPorCiclo(effectiveStudentId, selectedStudent);
-        if (notasJson) {
-          const periodoActual = resumenDesdeJson(notasJson);
-          if (real) {
-            setData({
-              ...real,
-              estudiante: { ...real.estudiante, periodo_codigo: notasJson.periodoActual },
-              cursos_periodo: periodoActual.cursos_periodo,
-              resumen: { ...real.resumen, ...periodoActual.resumen },
-              _notasJson: notasJson,
-            });
-          } else {
-            const boletinJson = generarBoletinDesdeJson(effectiveStudentId, selectedStudent);
-            if (boletinJson) {
-              setData(boletinJson);
-            } else {
-              throw new Error('No se pudo generar la información del boletín.');
-            }
-          }
-        } else if (real) {
-          const evaluacion = mockEvaluacion.evaluaciones.find(
-            e => e.codigo_estudiante === real.estudiante.codigo_estudiante
-              && e.periodo === real.estudiante.periodo_codigo
-          );
-          setData(evaluacion ? { ...real, ...evaluacion } : real);
+        if (real) {
+          setData(real);
         } else {
           throw new Error('No se encontró información del boletín para este estudiante.');
         }

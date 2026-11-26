@@ -1376,7 +1376,7 @@ export function StudentMaster() {
       </div>
 
       <div className="glass-card p-3 mb-6 flex flex-col md:flex-row md:items-center gap-3 relative z-30 lg:shrink-0">
-        {!esRolRestringidoPrograma && ['superadmin', 'admin', 'admin_admision'].includes(userRole) && (
+        {!esRolRestringidoPrograma && ['superadmin', 'admin', 'admin_admision', 'oficina_admision'].includes(userRole) && (
           <ProgramaFilter
             value={currentPrograma}
             onChange={setCurrentPrograma}

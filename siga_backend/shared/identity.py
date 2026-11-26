@@ -21,6 +21,8 @@ class Identity:
     roles: List[str]
     programa_id: Optional[int]
     is_superuser: bool
+    email: str = ""
+    estudiante_id: Optional[int] = None  # ficha de estudiante vinculada (solo rol estudiante)
 
 
 def _get_secret_key() -> str:
@@ -84,7 +86,7 @@ async def get_identity(request: Request, db: AsyncSession) -> Identity:
 
     # 3. Usuario existente y activo en core_users
     user_res = await db.execute(
-        text("SELECT is_active, is_superuser FROM core_users WHERE id = :uid"),
+        text("SELECT is_active, is_superuser, email FROM core_users WHERE id = :uid"),
         {"uid": user_id}
     )
     user_row = user_res.fetchone()
@@ -114,11 +116,25 @@ async def get_identity(request: Request, db: AsyncSession) -> Identity:
     perfil_row = perfil_res.fetchone()
     programa_id = perfil_row[0] if perfil_row and perfil_row[0] is not None else None
 
+    email = (user_row[2] or "").strip().lower()
+
+    # Vinculo usuario-estudiante: el correo institucional de la ficha coincide con el del usuario.
+    estudiante_id = None
+    if "estudiante" in roles and email:
+        est_res = await db.execute(
+            text("SELECT id FROM estudiantes WHERE lower(email_institucional) = :em LIMIT 1"),
+            {"em": email},
+        )
+        est_row = est_res.fetchone()
+        estudiante_id = est_row[0] if est_row else None
+
     return Identity(
         user_id=user_id,
         roles=roles,
         programa_id=programa_id,
-        is_superuser=is_superuser
+        is_superuser=is_superuser,
+        email=email,
+        estudiante_id=estudiante_id,
     )
 
 
@@ -166,16 +182,29 @@ async def es_coordinador_de_docente(i: Identity, docente_id: int, db: AsyncSessi
 
 
 ROLES_RESTRINGIDOS_POR_PROGRAMA = {
-    "secretaria_academica",
     "secretaria_programa",
     "coordinador_programa",
+    "docente",
 }
+
+# Roles de ambito de estudiante: solo ven su propia ficha.
+ROLES_STAFF = {
+    "superadmin", "admin", "director", "caja_tesoreria", "tesoreria", "oficina_admision",
+    "admin_admision", "secretaria_academica", "secretaria_programa", "coordinador_programa", "docente",
+}
+
+
+def es_solo_estudiante(i: Identity) -> bool:
+    """True si el usuario es estudiante y no tiene ningun rol de personal."""
+    return (not i.is_superuser) and "estudiante" in i.roles and not any(r in ROLES_STAFF for r in i.roles)
 
 ROLES_ACCESO_GLOBAL_ESTUDIANTES = {
     "superadmin",
     "admin",
     "director",
+    "secretaria_academica",
     "caja_tesoreria",
+    "tesoreria",
     "oficina_admision",
     "admin_admision",
 }
@@ -210,6 +239,9 @@ def resolver_filtro_programa_estudiantes(
     - Solicitando una carrera distinta a la suya -> HTTP 403.
     - Sin parámetro o coincidente -> retorna su carrera asignada.
     """
+    if es_solo_estudiante(i):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No tiene permisos para esta operación.")
+
     restringido, prog_asignado = programa_autorizado_estudiantes(i)
     if not restringido:
         return programa_id_solicitado
@@ -232,11 +264,20 @@ def resolver_filtro_programa_estudiantes(
 def verificar_acceso_estudiante(
     i: Identity,
     estudiante_programa_id: Optional[int],
+    estudiante_id: Optional[int] = None,
 ) -> None:
     """
     Verifica que el usuario autenticado tenga permiso para acceder o modificar
     un estudiante concreto según su programa_id.
     """
+    if es_solo_estudiante(i):
+        if estudiante_id is None or i.estudiante_id is None or int(estudiante_id) != int(i.estudiante_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Solo puede consultar su propia información.",
+            )
+        return
+
     restringido, prog_asignado = programa_autorizado_estudiantes(i)
     if not restringido:
         return

@@ -459,9 +459,9 @@ async def test_rutas_grupo_2_accesibles_sin_token(client_prog, fix_entorno_progr
     p_id = env["periodo_id"]
     prog_1 = env["programa_1"]
 
-    # GET /programas/{id}/carga-lectiva responde sin token (G2)
+    # GET /programas/{id}/carga-lectiva ahora exige identidad (solo personal de esa carrera)
     r1 = await client_prog.get(f"/programas/{prog_1}/carga-lectiva?periodo_id={p_id}")
-    assert r1.status_code == 200
+    assert r1.status_code == 401
 
     # GET /periodos responde sin token (G2)
     r2 = await client_prog.get("/periodos")

@@ -8,12 +8,21 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 import bcrypt
 from database import get_db, OutboxEvent
 from models import Usuario, Rol, Permiso, PerfilPersonal
+from shared.identity import get_identity, es_superadmin
 
 
 def _hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 router = APIRouter()
+
+
+async def _solo_superadmin(request: Request, db: AsyncSession):
+    """La gestión de cuentas, roles y personal es exclusiva del administrador del sistema."""
+    ident = await get_identity(request, db)
+    if not es_superadmin(ident):
+        raise HTTPException(status_code=403, detail="Solo el administrador del sistema puede gestionar usuarios y personal.")
+    return ident
 
 # Schemas Pydantic
 class RolBase(BaseModel):
@@ -103,6 +112,7 @@ async def health_check():
 # --- CRUD Roles ---
 @router.post("/roles", response_model=RolResponse, status_code=status.HTTP_201_CREATED)
 async def crear_rol(rol: RolCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _solo_superadmin(request, db)
     result = await db.execute(select(Rol).where(Rol.name == rol.name))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="El rol ya existe")
@@ -130,6 +140,7 @@ async def obtener_roles(db: AsyncSession = Depends(get_db)):
 # --- CRUD Usuarios ---
 @router.post("/usuarios", response_model=UsuarioResponse, status_code=status.HTTP_201_CREATED)
 async def crear_usuario(usuario: UsuarioCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _solo_superadmin(request, db)
     result = await db.execute(select(Usuario).where(Usuario.email == usuario.email))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="El email ya está registrado")
@@ -185,6 +196,7 @@ async def obtener_usuario(usuario_id: int, db: AsyncSession = Depends(get_db)):
 
 @router.put("/usuarios/{usuario_id}", response_model=UsuarioResponse)
 async def actualizar_usuario(usuario_id: int, usuario: UsuarioUpdate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _solo_superadmin(request, db)
     result = await db.execute(
         select(Usuario).options(selectinload(Usuario.roles)).where(Usuario.id == usuario_id)
     )
@@ -221,6 +233,7 @@ async def actualizar_usuario(usuario_id: int, usuario: UsuarioUpdate, request: R
 
 @router.delete("/usuarios/{usuario_id}")
 async def eliminar_usuario(usuario_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _solo_superadmin(request, db)
     result = await db.execute(select(Usuario).where(Usuario.id == usuario_id))
     db_user = result.scalar_one_or_none()
     if not db_user:
@@ -242,6 +255,7 @@ async def eliminar_usuario(usuario_id: int, request: Request, db: AsyncSession =
 # --- CRUD Personal Institucional ---
 @router.post("/personal", response_model=PersonalResponse, status_code=status.HTTP_201_CREATED)
 async def registrar_personal(personal: PersonalCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _solo_superadmin(request, db)
     # Validar email
     result = await db.execute(select(Usuario).where(Usuario.email == personal.email))
     if result.scalar_one_or_none():
@@ -312,6 +326,7 @@ async def registrar_personal(personal: PersonalCreate, request: Request, db: Asy
 
 @router.put("/personal/{perfil_id}", response_model=PersonalResponse)
 async def actualizar_personal(perfil_id: int, personal: PersonalUpdate, request: Request, db: AsyncSession = Depends(get_db)):
+    await _solo_superadmin(request, db)
     result = await db.execute(
         select(PerfilPersonal)
         .options(selectinload(PerfilPersonal.usuario).selectinload(Usuario.roles))

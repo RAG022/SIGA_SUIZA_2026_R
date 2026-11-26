@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import OutboxEvent, engine, get_db
 from models import ConceptoTupa, ConfiguracionCaja, Estudiante, PagoCaja
+from shared.identity import get_identity, verificar_acceso_estudiante
 
 router = APIRouter(prefix="/tesoreria")
 
@@ -554,6 +555,17 @@ async def estudiante_o_404(db: AsyncSession, estudiante_id: int) -> Estudiante:
 # Tarifario TUPA
 # ---------------------------------------------------------------------------
 
+ROLES_TESORERIA = {"superadmin", "admin", "caja_tesoreria", "tesoreria"}
+
+
+async def _exigir_tesoreria(request: Request, db: AsyncSession):
+    """Operaciones de caja: solo tesorería y administración."""
+    ident = await get_identity(request, db)
+    if ident.is_superuser or any(r in ROLES_TESORERIA for r in ident.roles):
+        return ident
+    raise HTTPException(status_code=403, detail="No tiene permisos para operar en Tesorería.")
+
+
 @router.get("/conceptos")
 async def listar_conceptos(db: AsyncSession = Depends(get_db)):
     return [concepto_dict(c) for c in await conceptos_activos(db)]
@@ -568,7 +580,8 @@ async def _codigo_disponible(db: AsyncSession, codigo: str, excluir_id: Optional
 
 
 @router.post("/conceptos", status_code=201)
-async def crear_concepto(data: ConceptoIn, db: AsyncSession = Depends(get_db)):
+async def crear_concepto(data: ConceptoIn, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     codigo = data.codigo.strip().upper()
     if not codigo or not data.nombre.strip():
         raise HTTPException(400, detail="El código y el nombre son obligatorios.")
@@ -586,7 +599,8 @@ async def crear_concepto(data: ConceptoIn, db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/conceptos/{concepto_id}")
-async def actualizar_concepto(concepto_id: int, data: ConceptoIn, db: AsyncSession = Depends(get_db)):
+async def actualizar_concepto(concepto_id: int, data: ConceptoIn, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     concepto = (await db.execute(select(ConceptoTupa).where(ConceptoTupa.id == concepto_id, ConceptoTupa.activo.is_(True)))).scalar_one_or_none()
     if not concepto:
         raise HTTPException(404, detail="Concepto no encontrado")
@@ -607,7 +621,8 @@ async def actualizar_concepto(concepto_id: int, data: ConceptoIn, db: AsyncSessi
 
 
 @router.delete("/conceptos/{concepto_id}")
-async def eliminar_concepto(concepto_id: int, db: AsyncSession = Depends(get_db)):
+async def eliminar_concepto(concepto_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     concepto = (await db.execute(select(ConceptoTupa).where(ConceptoTupa.id == concepto_id))).scalar_one_or_none()
     if not concepto:
         raise HTTPException(404, detail="Concepto no encontrado")
@@ -617,7 +632,8 @@ async def eliminar_concepto(concepto_id: int, db: AsyncSession = Depends(get_db)
 
 
 @router.post("/conceptos/restaurar")
-async def restaurar_conceptos(db: AsyncSession = Depends(get_db)):
+async def restaurar_conceptos(request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     result = await db.execute(select(ConceptoTupa).where(ConceptoTupa.activo.is_(True)))
     for c in result.scalars().all():
         c.activo = False
@@ -640,7 +656,8 @@ async def leer_config(db: AsyncSession = Depends(get_db)):
 
 
 @router.put("/config")
-async def guardar_config(data: dict, db: AsyncSession = Depends(get_db)):
+async def guardar_config(data: dict, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     valor = {k: data.get(k, v) for k, v in CONFIG_CAJA_DEFECTO.items()}
     valor["urlPublica"] = (valor.get("urlPublica") or "").strip().rstrip("/")
     if len(valor.get("yapeQrImagen") or "") > 1_500_000:
@@ -659,7 +676,8 @@ async def guardar_config(data: dict, db: AsyncSession = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 @router.get("/pagos")
-async def listar_pagos(estudiante_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+async def listar_pagos(request: Request, estudiante_id: Optional[int] = None, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     secreto = await secreto_qr(db)
     stmt = select(PagoCaja).where(PagoCaja.estado == "PAGADO").order_by(PagoCaja.fecha_pago.desc(), PagoCaja.id.desc())
     if estudiante_id is not None:
@@ -671,6 +689,7 @@ async def listar_pagos(estudiante_id: Optional[int] = None, db: AsyncSession = D
 
 @router.post("/pagos", status_code=201)
 async def registrar_pago(data: PagoIn, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     secreto = await secreto_qr(db)
     est = await estudiante_o_404(db, data.estudianteId)
     concepto = (await db.execute(select(ConceptoTupa).where(ConceptoTupa.id == data.conceptoId, ConceptoTupa.activo.is_(True)))).scalar_one_or_none()
@@ -729,14 +748,18 @@ async def registrar_pago(data: PagoIn, request: Request, db: AsyncSession = Depe
 
 
 @router.get("/estudiantes/{estudiante_id}/estado-cuenta")
-async def estado_cuenta(estudiante_id: int, db: AsyncSession = Depends(get_db)):
+async def estado_cuenta(estudiante_id: int, request: Request, db: AsyncSession = Depends(get_db)):
+    ident = await get_identity(request, db)
     secreto = await secreto_qr(db)
     est = await estudiante_o_404(db, estudiante_id)
+    if not (ident.is_superuser or any(r in ROLES_TESORERIA for r in ident.roles)):
+        verificar_acceso_estudiante(ident, est.programa_id, est.id)
     return await construir_estado_cuenta(db, est, secreto)
 
 
 @router.post("/importar")
 async def importar_datos_locales(data: ImportacionIn, request: Request, db: AsyncSession = Depends(get_db)):
+    await _exigir_tesoreria(request, db)
     """Migra (una sola vez por navegador) los datos que la caja guardaba en localStorage."""
     await conceptos_activos(db)
     resumen = {"conceptos": 0, "pagos": 0, "omitidos": 0}

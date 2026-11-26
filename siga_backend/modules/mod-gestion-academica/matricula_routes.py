@@ -478,7 +478,7 @@ async def obtener_ficha(estudiante_id: int, request: Request, db: AsyncSession =
     )).scalar_one_or_none()
     if not estudiante:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, estudiante.programa_id)
+    verificar_acceso_estudiante(ident, estudiante.programa_id, estudiante.id)
 
     result = await db.execute(
         select(Matricula)
@@ -535,7 +535,7 @@ async def propuesta_matricula(
     est = (await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))).scalar_one_or_none()
     if not est:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, est.programa_id)
+    verificar_acceso_estudiante(ident, est.programa_id, est.id)
 
     ctx = await construir_contexto(
         db, estudiante_id, programa_id, periodo_id,
@@ -579,7 +579,7 @@ async def restricciones_matricula(
     est = (await db.execute(select(Estudiante).where(Estudiante.id == estudiante_id))).scalar_one_or_none()
     if not est:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, est.programa_id)
+    verificar_acceso_estudiante(ident, est.programa_id, est.id)
 
     ctx = await construir_contexto(
         db, estudiante_id, programa_id, periodo_id,
@@ -780,7 +780,7 @@ async def evaluar_casuistica(payload: EvaluacionCasuisticaRequest, request: Requ
     )).scalar_one_or_none()
     if not estud:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, estud.programa_id)
+    verificar_acceso_estudiante(ident, estud.programa_id, estud.id)
 
     casuistica = normalizar_casuistica(payload.casuistica) or payload.casuistica
     condiciones = []
@@ -848,7 +848,7 @@ async def emitir_boleta(matricula_id: int, request: Request, db: AsyncSession = 
     """Emite (idempotente) la boleta con código QR único de la matrícula."""
     ident = await get_identity(request, db)
     matricula = await _obtener_matricula(db, matricula_id)
-    verificar_acceso_estudiante(ident, matricula.programa_id)
+    verificar_acceso_estudiante(ident, matricula.programa_id, matricula.estudiante_id)
     if not matricula.boleta_codigo:
         matricula.boleta_codigo = _generar_codigo_boleta(matricula.periodo_id)
         matricula.boleta_emitida_en = datetime.utcnow()
@@ -988,7 +988,7 @@ async def consolidar_matricula(matricula_id: int, request: Request, db: AsyncSes
     """Cierra el proceso de matrícula en los 5 pasos del diagrama."""
     ident = await get_identity(request, db)
     matricula = await _obtener_matricula(db, matricula_id)
-    verificar_acceso_estudiante(ident, matricula.programa_id)
+    verificar_acceso_estudiante(ident, matricula.programa_id, matricula.estudiante_id)
     pasos = []
 
     # 1. Consolidar matrícula + registro académico
@@ -1117,7 +1117,7 @@ async def historial_estudiante(estudiante_id: int, request: Request, db: AsyncSe
     )).scalar_one_or_none()
     if not est:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, est.programa_id)
+    verificar_acceso_estudiante(ident, est.programa_id, est.id)
     mats = (await db.execute(
         select(Matricula)
         .options(selectinload(Matricula.detalles))
@@ -1170,7 +1170,7 @@ async def registrar_historial(payload: HistorialEventoRequest, request: Request,
     )).scalar_one_or_none()
     if not est:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, est.programa_id)
+    verificar_acceso_estudiante(ident, est.programa_id, est.id)
 
     evento = HistorialAcademico(**payload.model_dump())
     db.add(evento)
@@ -1250,7 +1250,7 @@ async def avance_estudiante(estudiante_id: int, request: Request, programa_id: O
     )).scalar_one_or_none()
     if not est:
         raise HTTPException(status_code=404, detail="Estudiante no encontrado")
-    verificar_acceso_estudiante(ident, est.programa_id)
+    verificar_acceso_estudiante(ident, est.programa_id, est.id)
     prog = programa_id or est.programa_id
     if not prog:
         raise HTTPException(status_code=400, detail="El estudiante no tiene programa asignado")

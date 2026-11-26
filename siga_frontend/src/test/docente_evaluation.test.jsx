@@ -655,10 +655,10 @@ describe('Auditoría Frontend - Rol Docente (EvaluationDashboard & DocentePlanni
           archivo_url: '/docs/planes/plan_anual.pdf'
         });
       }
-      if (endpoint.includes('/programas-estudio/programas') && !endpoint.includes('/malla')) {
+      if (endpoint.includes('programas-estudio/programas') && !endpoint.includes('/malla')) {
         return Promise.resolve([{ id: 1, nombre: 'DSI' }]);
       }
-      if (endpoint.includes('/programas-estudio/periodos')) {
+      if (endpoint.includes('programas-estudio/periodos')) {
         return Promise.resolve([{ id: 1, codigo: '2026-I', estado: 'abierto' }]);
       }
       if (endpoint.includes('/carga-lectiva')) {
@@ -687,6 +687,12 @@ describe('Auditoría Frontend - Rol Docente (EvaluationDashboard & DocentePlanni
     );
     const subirPlanBtn = await screen.findByRole('button', { name: /Subir Plan de Trabajo/i });
     expect(subirPlanBtn).toBeInTheDocument();
+    // El programa efectivo del docente se deriva de su carga lectiva (carga asíncrona):
+    // se espera a que llegue antes de subir el plan.
+    await waitFor(() => {
+      expect(apiClient.request).toHaveBeenCalledWith(expect.stringContaining('/carga-lectiva'));
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
 
     fireEvent.click(subirPlanBtn);
 
