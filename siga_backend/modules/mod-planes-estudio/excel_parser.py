@@ -42,6 +42,10 @@ class ExcelMineduParser:
             for j, val in enumerate(row.values):
                 if pd.notna(val) and isinstance(val, str):
                     val_lower = val.lower().strip()
+                    # Una cabecera de tabla es una celda corta. Un texto largo (p. ej. "Unidad de
+                    # competencia N.° 1: ... horas ...") no debe confundirse con la fila de cabecera.
+                    if len(val_lower) > 40:
+                        continue
                     for kw in required_keywords:
                         if kw in val_lower:
                             found_cols[kw] = j
